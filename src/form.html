@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Formular</title>
+<link rel="stylesheet" href="app.css">
+<style>
+  /* Ein einspaltiges Fenster: Kopfzeile, scrollende Feldliste, Fußzeile. */
+  body { display:flex; flex-direction:column; padding:14px; gap:10px; overflow:hidden }
+  h2 { font-size:12px; font-weight:600; margin:0; display:flex; align-items:baseline; gap:6px;
+       padding-bottom:9px; border-bottom:1px solid var(--line) }
+  h2 .meta { font-weight:400; color:var(--muted) }
+  #form { overflow-y:auto; flex:1; min-height:0; width:100%; max-width:640px; margin:0 auto }
+  footer { padding-top:9px; border-top:1px solid var(--line) }
+  .empty { color:var(--muted); display:flex; flex-direction:column; align-items:center; justify-content:center;
+           text-align:center; gap:3px; height:100%; min-height:72px; padding:12px; max-width:44ch; margin:0 auto }
+  .empty b { color:var(--ink); font-weight:600 }
+</style>
+</head>
+<body>
+<h2>Formular<span class="meta" id="formMeta"></span></h2>
+<div id="form"></div>
+<footer>
+  <div class="row"><button id="fill" class="primary" disabled>Ausgewählte Dokumente ausfüllen</button>
+    <span id="status" role="status" aria-live="polite"></span></div>
+</footer>
+
+<script type="module">
+// Dieses Fenster kennt weder die Dokumente noch JSZip: es zeigt Felder an und
+// schickt die eingegebenen Werte zurück. Die Dokumentinhalte bleiben im
+// Hauptfenster — sie wären über die IPC-Grenze hinweg viel zu groß.
+import { invoke } from "./vendor/tauri-api.js";
+import { renderFields, collectValues } from "./form-ui.js";
+
+const $ = id => document.getElementById(id);
+function setStatus(m, err) { const s = $("status"); s.textContent = m; s.className = err ? "error" : ""; }
+
+let fields = [];
+let groupId = null;   // wird unverändert zurückgeschickt, damit das Hauptfenster
+                      // weiß, zu welcher Gruppe die Werte gehören
+
+// Werte werden entkoppelt zwischengespeichert, damit sie ein Schließen des
+// Fensters überleben und beim erneuten Öffnen wieder dastehen.
+let saveTimer = 0;
+function cacheNow() {
+  clearTimeout(saveTimer);
+  if (!fields.length) return;
+  invoke("form_cache_values", { payload: payloadNow() }).catch(() => {});
+}
+function cacheSoon() { clearTimeout(saveTimer); saveTimer = setTimeout(cacheNow, 300); }
+function payloadNow() {
+  return JSON.stringify({ id: groupId, fields, meta: $("formMeta").textContent, values: collectValues($("form"), fields) });
+}
+
+async function load() {
+  let data;
+  try { data = JSON.parse(await invoke("form_payload")); }
+  catch { setStatus("Das Formular konnte nicht geladen werden.", true); return; }
+
+  fields = Array.isArray(data.fields) ? data.fields : [];
+  groupId = data.id || null;
+  $("formMeta").textContent = data.meta || "";
+  if (!fields.length) {
+    $("form").innerHTML = `<div class="empty"><b>Kein Formular</b>Im Hauptfenster Dokumente auswählen und
+      das Formular erneut erstellen.</div>`;
+    return;
+  }
+  renderFields($("form"), fields, data.values || {});
+  $("fill").disabled = false;
+  $("form").addEventListener("input", cacheSoon);
+  // change und blur sofort sichern: wer direkt danach das Fenster schließt,
+  // soll die letzten Eingaben nicht verlieren
+  $("form").addEventListener("change", cacheNow);
+  addEventListener("blur", cacheNow);
+}
+
+async function submit() {
+  if ($("fill").disabled) return;
+  $("fill").disabled = true;
+  $("fill").setAttribute("aria-busy", true);
+  setStatus("Wird ausgefüllt…");
+  clearTimeout(saveTimer);
+  try {
+    // Das Hauptfenster füllt die Dokumente und schließt dieses Fenster danach.
+    await invoke("form_submit", { payload: payloadNow() });
+  } catch (e) {
+    setStatus(String(e), true);
+    $("fill").disabled = false;
+    $("fill").setAttribute("aria-busy", false);
+  }
+}
+$("fill").onclick = submit;
+// ⌘↵ / Ctrl+↵ füllt aus — dieselbe Tastenkombination wie früher im Hauptfenster
+addEventListener("keydown", e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); } });
+
+load();
+</script>
+</body>
+</html>

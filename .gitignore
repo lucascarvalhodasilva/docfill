@@ -1,0 +1,15 @@
+# Abhängigkeiten und Bauergebnisse — src-tauri/target allein sind mehrere GB
+node_modules/
+src-tauri/target/
+
+# von tauri-build bei jedem Bauen neu erzeugt
+src-tauri/gen/schemas/
+
+# bleibt liegen, wenn die laufende Anwendung beim Bauen ersetzt wurde
+*.exe.old
+
+# Betriebssystem-Beiwerk (macOS legt beim Kopieren ._-Dateien an)
+.DS_Store
+._*
+Thumbs.db
+desktop.ini

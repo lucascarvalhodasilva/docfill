@@ -1,0 +1,57 @@
+/* Gemeinsame Grundlage für index.html und form.html: Farben, Formularfelder,
+   Schaltflächen, Statuszeile. Alles Seitenspezifische (Raster, Seitenleiste,
+   Panels, Ergebnisliste, Kachel) bleibt in der jeweiligen Seite.
+
+   In beiden Seiten muss <link rel="stylesheet" href="app.css"> VOR dem eigenen
+   <style>-Block stehen, damit die Seitenregeln weiterhin gewinnen. */
+
+:root {
+  color-scheme:dark;
+  /* surfaces: canvas < sidebar < panel, inputs recessed */
+  --canvas:#14161a; --sidebar:#191c21; --surface:#1e2229; --sunk:#16181d; --raised:#252a33;
+  --ink:#e3e7ee; --muted:#8d96a5;
+  --line:#2b3039;        /* dividers and panel edges (decorative) */
+  --field-line:#667082;  /* control boundaries: 3.6:1 on the field fill, WCAG 1.4.11 */
+  --accent:#5fa2e0;      /* text, focus rings, selection: 5.9:1 on panels */
+  --accent-solid:#3574bd; --accent-solid-hi:#2f6db5;  /* filled buttons: white at 4.8:1 */
+  --ok:#5cc48c; --danger:#ef7d73;
+  --r:6px; --r-sm:4px;
+  --dur:160ms; --ease:cubic-bezier(.22,1,.36,1);
+}
+@media (prefers-reduced-motion: reduce) { :root { --dur:1ms } * { animation:none !important } }
+
+* { box-sizing:border-box } html,body { margin:0; height:100% }
+body { font:13px/1.45 -apple-system,"Segoe UI",system-ui,sans-serif; color:var(--ink); background:var(--canvas) }
+
+/* ---- form fields ---- */
+.field { padding:7px 0; border-top:1px solid var(--line) } .field:first-child { border-top:0; padding-top:0 }
+label.t { display:block; font-weight:600; margin-bottom:3px }
+label.t .meta { font-weight:400; color:var(--muted); margin-left:6px }
+input[type=text],input[type=date],select,textarea {
+  width:100%; padding:6px 8px; border:1px solid var(--field-line); border-radius:var(--r-sm);
+  background:var(--sunk); font:inherit; color:inherit;
+  transition:border-color var(--dur) var(--ease), background var(--dur) var(--ease) }
+input[type=text]:hover,input[type=date]:hover,select:hover,textarea:hover { border-color:var(--accent) }
+textarea { min-height:54px; resize:vertical }
+/* Words Platzhaltertext, grau: benennt das Feld, ist aber kein Wert */
+input::placeholder, textarea::placeholder { color:var(--muted); opacity:1 }
+input[type=date] { max-width:190px } select { max-width:300px }
+.check { display:flex; align-items:center; gap:8px; cursor:pointer }
+input[type=checkbox] { width:15px; height:15px; margin:0; flex:none; accent-color:var(--accent-solid) }
+
+/* ---- controls ---- */
+:focus-visible { outline:2px solid var(--accent); outline-offset:2px }
+button { font:inherit; padding:5px 11px; border-radius:var(--r-sm); border:1px solid var(--field-line);
+         background:var(--sunk); color:var(--ink); cursor:pointer; white-space:nowrap;
+         transition:background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease) }
+button:hover:not(:disabled) { background:var(--raised); border-color:var(--accent) }
+button:active:not(:disabled) { background:var(--sunk) }
+button.primary { background:var(--accent-solid); border-color:var(--accent-solid); color:#fff; font-weight:600 }
+button.primary:hover:not(:disabled) { background:var(--accent-solid-hi); border-color:var(--accent-solid-hi) }
+button:disabled { opacity:.4; cursor:default }
+button[aria-busy=true] { cursor:progress }
+.row { display:flex; gap:8px; align-items:center; flex-wrap:wrap }
+.row .spacer { flex:1 }
+
+/* ---- status line ---- */
+#status { color:var(--muted); min-height:1.45em } #status.error { color:var(--danger) }

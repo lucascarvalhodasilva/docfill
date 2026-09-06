@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docfill</title>
+<!-- lokal eingebunden, damit die App offline funktioniert; docx-preview liest das JSZip-Global, Reihenfolge zaehlt -->
+<script src="vendor/jszip.min.js"></script>
+<script src="vendor/docx-preview.min.js"></script>
+<!-- muss VOR dem eigenen <style> stehen, damit die Seitenregeln gewinnen -->
+<link rel="stylesheet" href="app.css">
+<style>
+  /* Farben, Formularfelder, Schaltflächen und die Statuszeile stehen in
+     app.css und werden mit form.html geteilt. Hier nur das Seitenlayout. */
+  body { display:grid; grid-template-columns:260px minmax(0,1fr) }
+
+  /* ---- sidebar ---- */
+  aside { background:var(--sidebar); border-right:1px solid var(--line); padding:29px 12px 14px; overflow:auto;
+          display:flex; flex-direction:column; gap:10px }
+  main { padding:14px; overflow:hidden; display:grid; gap:12px;
+         grid-template-columns:minmax(0,1fr); grid-template-rows:minmax(0,1fr) auto }
+
+  h2 { font-size:12px; font-weight:600; margin:0; display:flex; align-items:baseline; gap:6px }
+  h2 .meta { font-weight:400; color:var(--muted) }
+  aside > h2, section.panel > h2 { padding-bottom:9px; border-bottom:1px solid var(--line) }
+  aside > .row, section.panel > .row { padding-top:9px; border-top:1px solid var(--line) }
+
+  section.panel { background:var(--surface); border:1px solid var(--line); border-radius:var(--r); padding:14px;
+                  display:flex; flex-direction:column; gap:10px; min-height:0 }
+  #form, #results { overflow:auto; flex:1; min-height:0 }
+  /* Die Zeilen ragen mit margin:0 -6px absichtlich über den Textbereich hinaus,
+     damit die Hervorhebung bis an den Panelrand reicht. Ohne das Polster hier
+     zählen diese 6px rechts als Überlauf und erzeugen eine waagerechte
+     Bildlaufleiste; padding und negativer Rand heben sich exakt auf. */
+  #results { flex:0 1 auto; max-height:38vh; padding-inline:6px; margin-inline:-6px }
+
+  .drop { display:block; position:relative; border:1.5px dashed var(--field-line); border-radius:var(--r);
+          padding:16px 10px; text-align:center; color:var(--muted); cursor:pointer;
+          transition:border-color var(--dur) var(--ease), color var(--dur) var(--ease), background var(--dur) var(--ease) }
+  .drop:hover { border-color:var(--accent); color:var(--ink) }
+  .drop.over { border-color:var(--accent); color:var(--accent); background:rgba(95,162,224,.08) }
+  .drop input { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none }
+  .drop:has(input:focus-visible) { outline:2px solid var(--accent); outline-offset:2px; border-color:var(--accent) }
+  .drop kbd { display:block; margin-top:3px; font:inherit; font-size:12px; color:var(--muted) }
+
+  ul { list-style:none; margin:0; padding:0 } ul:not(:empty) { flex:1 }
+  li.file { display:flex; align-items:center; gap:8px; padding:4px 6px; margin:0 -6px; border-radius:var(--r-sm);
+            transition:background var(--dur) var(--ease) }
+  li.file:hover { background:var(--raised) }
+  li.file + li.file { box-shadow:0 -1px 0 var(--line) }
+  li.file label { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; padding:3px 0;
+                  transition:color var(--dur) var(--ease) }
+  li.file:has(input:not(:checked)) label { color:var(--muted) }
+  li.file .x { display:grid; place-items:center; width:22px; height:22px; flex:none; padding:0; font-size:12px;
+               background:none; border:0; border-radius:var(--r-sm); color:var(--muted); cursor:pointer; opacity:0;
+               transition:opacity var(--dur) var(--ease), color var(--dur) var(--ease), background var(--dur) var(--ease) }
+  li.file:hover .x, li.file .x:focus-visible { opacity:1 }
+  li.file .x:hover { color:var(--danger); background:rgba(239,125,115,.12) }
+
+  /* ---- Formular-Kachel ----
+     Unter #form gehalten, damit die Kachel die allgemeinen button-Regeln aus
+     app.css sicher übersteuert (ID schlägt Klasse). */
+  /* oben links beginnend, danach zeilenweise weiter: jede Gruppe eine Kachel */
+  .tile-wrap { display:flex; flex-wrap:wrap; align-content:flex-start; gap:8px }
+  /* Die Kachel sitzt oben links im Panel, Symbol und Beschriftung stehen
+     darin mittig übereinander. */
+  #form .tile { position:relative; display:flex; flex-direction:column; align-items:center; gap:7px; padding:10px 12px;
+                width:150px;
+                background:none; border:1px solid transparent; border-radius:var(--r); cursor:pointer;
+                color:var(--ink); font:inherit; text-align:center; white-space:normal;
+                transition:background var(--dur) var(--ease), border-color var(--dur) var(--ease) }
+  #form .tile .glyph { display:grid; place-items:center; width:60px; height:60px; font-size:28px; line-height:1;
+                       border-radius:14px; border:1px solid var(--field-line);
+                       background:linear-gradient(180deg,var(--raised),var(--surface));
+                       transition:border-color var(--dur) var(--ease), transform var(--dur) var(--ease) }
+  #form .tile .name { font-weight:600 }
+  #form .tile .meta { color:var(--muted) }
+  /* Favoritenstern: die Gruppe liegt im Datenordner und ist beim nächsten Start wieder da */
+  #form .tile .star { position:absolute; top:5px; right:7px; color:var(--accent); font-size:12px; line-height:1 }
+  #form .tile:hover:not(:disabled) { background:var(--raised); border-color:var(--line) }
+  #form .tile:hover:not(:disabled) .glyph { border-color:var(--accent); transform:translateY(-2px) }
+  #form .tile:disabled { opacity:.4; cursor:default }
+
+  /* ---- Kontextmenü ----
+     Hängt direkt am <body>: main hat overflow:hidden und #form overflow:auto,
+     innerhalb des Panels würde das Menü abgeschnitten. Position wird per CSSOM
+     gesetzt, ein style-Attribut würde die CSP verwerfen. */
+  .menu { position:fixed; z-index:10; min-width:172px; display:flex; flex-direction:column; padding:4px;
+          background:var(--surface); border:1px solid var(--line); border-radius:var(--r);
+          box-shadow:0 10px 28px rgba(0,0,0,.5) }
+  .menu[hidden] { display:none }
+  .menu button { background:none; border:0; border-radius:var(--r-sm); padding:6px 10px; text-align:left;
+                 color:var(--ink); font:inherit; cursor:pointer; white-space:nowrap }
+  .menu button:hover:not(:disabled), .menu button:focus-visible { background:var(--raised) }
+  .menu button.danger { color:var(--danger) }
+  .menu button.danger:hover:not(:disabled), .menu button.danger:focus-visible { background:rgba(239,125,115,.12) }
+  .menu button:disabled { opacity:.4; cursor:default; background:none }
+
+  /* ---- kleiner Dialog (Umbenennen, Nachfrage) ----
+     fit-content, nicht auto: ein modaler Dialog bekommt vom Browser
+     inset:0 und margin:auto. Damit sind oben und unten festgelegt, und
+     height:auto füllt die ganze Höhe, statt sich um den Inhalt zu legen. */
+  dialog.small { width:min(360px,92vw); height:fit-content; max-height:calc(100vh - 40px) }
+  dialog.small .body { padding:12px; display:flex; flex-direction:column; gap:8px }
+  dialog.small .body p { margin:0; color:var(--muted) }
+  dialog.small .bar.foot { border-bottom:0; border-top:1px solid var(--line); justify-content:flex-end }
+
+  /* ---- Ersatzdialog ohne Tauri ---- */
+  #dlgForm { flex:1; overflow-y:auto; padding:12px }
+
+  /* ---- results ---- */
+  .empty { color:var(--muted); display:flex; flex-direction:column; align-items:center; justify-content:center;
+           text-align:center; gap:3px; height:100%; min-height:72px; padding:12px; max-width:44ch; margin:0 auto }
+  .empty b { color:var(--ink); font-weight:600 }
+  .results { display:flex; flex-direction:column }
+  .result { display:flex; align-items:center; gap:6px; padding:5px 6px; margin:0 -6px; border-radius:var(--r-sm);
+            transition:background var(--dur) var(--ease); animation:rowIn 200ms var(--ease) both }
+  .result:hover { background:var(--raised) }
+  .result + .result { box-shadow:0 -1px 0 var(--line) }
+  .result .name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  .result .size { color:var(--muted); font-variant-numeric:tabular-nums; flex:none }
+  /* Zusammenhängende Schaltflächen: die Ränder der Nachbarn fallen zusammen,
+     beim Überfahren kommt die betonte Umrandung nach vorn. */
+  .btn-group { display:inline-flex; flex:none }
+  .btn-group button { border-radius:0; margin-left:-1px }
+  .btn-group button:first-child { border-radius:var(--r-sm) 0 0 var(--r-sm); margin-left:0 }
+  .btn-group button:last-child { border-radius:0 var(--r-sm) var(--r-sm) 0 }
+  .btn-group button:hover:not(:disabled), .btn-group button:focus-visible { position:relative; z-index:1 }
+  .result .x { display:grid; place-items:center; width:26px; height:26px; flex:none; padding:0; font-size:12px;
+               background:none; border:0; border-radius:var(--r-sm); color:var(--muted); cursor:pointer;
+               transition:color var(--dur) var(--ease), background var(--dur) var(--ease) }
+  .result .x:hover { color:var(--danger); background:rgba(239,125,115,.12) }
+  @keyframes rowIn { from { opacity:0; transform:translateY(-3px) } to { opacity:1; transform:none } }
+
+  /* ---- preview dialog (browser fallback only) ---- */
+  dialog { width:min(860px,94vw); height:90vh; border:1px solid var(--line); border-radius:var(--r); padding:0;
+           flex-direction:column; background:var(--surface); color:var(--ink) }
+  dialog[open] { display:flex }
+  dialog:not([open]) { display:none }
+  dialog::backdrop { background:rgba(0,0,0,.62) }
+  dialog .bar { display:flex; gap:8px; align-items:center; padding:9px 12px; border-bottom:1px solid var(--line) }
+  dialog .bar b { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  #preview { flex:1; width:100%; border:0; background:#2a2e36 }
+  /* hidden from the stylesheet, not from a style attribute: the CSP in
+     tauri.conf.json (style-src 'self') drops inline styles, which left the
+     frame on screen as a default 300x150 box and pushed the body grid into
+     a second row */
+  #printFrame { display:none; width:0; height:0; border:0 }
+
+  @media (min-width:1180px) { main { grid-template-columns:minmax(0,1fr) minmax(0,440px); grid-template-rows:minmax(0,1fr) }
+    #results { max-height:none } }
+  @media (max-width:760px) { body { grid-template-columns:minmax(0,1fr) } aside { border-right:0; border-bottom:1px solid var(--line) } }
+  @media print { body > * { display:none !important } #printFrame { display:block !important } }
+</style>
+</head>
+<body>
+<aside>
+  <h2>Dokumente<span class="meta" id="docCount"></span></h2>
+  <label class="drop" id="drop">.docx-Dateien hierher ziehen<kbd>oder klicken zum Auswählen</kbd>
+    <input type="file" id="pick" accept=".docx" multiple></label>
+  <ul id="files"></ul>
+  <div class="row"><button id="all" disabled title="Alle Dokumente auswählen">Alle</button><span class="spacer"></span>
+    <button id="build" class="primary" disabled>Formular erstellen</button></div>
+</aside>
+
+<main>
+  <section class="panel">
+    <h2>Formular<span class="meta" id="formMeta"></span></h2>
+    <div id="form"><div class="empty"><b>Noch kein Formular</b>Links Dokumente hinzufügen und daraus das Formular
+      mit den gemeinsamen Inhaltssteuerelementen erstellen.</div></div>
+    <div class="row"><span id="status" role="status" aria-live="polite"></span></div>
+  </section>
+  <section class="panel">
+    <h2>Ausgefüllte Dokumente<span class="meta" id="resultCount"></span></h2>
+    <div id="results"><div class="empty"><b>Noch nichts ausgefüllt</b>Ausgefüllte Kopien bleiben hier, bis das
+      Programm beendet wird; die Originale werden nie verändert.</div></div>
+    <div class="row"><button id="saveAll" disabled>Alle speichern…</button><span class="spacer"></span>
+      <button id="deleteAll" disabled>Alle löschen</button></div>
+  </section>
+</main>
+
+<dialog id="dlg">
+  <div class="bar"><b id="dlgName"></b><button id="dlgPrint">Drucken</button><button id="dlgSave">Speichern</button><button id="dlgClose">Schließen</button></div>
+  <iframe id="preview" sandbox="allow-same-origin" title="Vorschau"></iframe>
+</dialog>
+<!-- Kontextmenü der Formular-Kachel; muss am <body> hängen, siehe CSS -->
+<div id="tileMenu" class="menu" role="menu" aria-label="Formular" hidden>
+  <button type="button" role="menuitem" data-a="rename">Umbenennen…</button>
+  <button type="button" role="menuitem" data-a="refresh">Aktualisieren</button>
+  <button type="button" role="menuitem" data-a="fav">Als Favorit merken</button>
+  <button type="button" role="menuitem" data-a="delete" class="danger">Löschen</button>
+</div>
+
+<dialog id="renameDlg" class="small">
+  <div class="bar"><b>Formular umbenennen</b></div>
+  <div class="body">
+    <label class="t" for="renameInput">Name</label>
+    <input type="text" id="renameInput" maxlength="60">
+  </div>
+  <div class="bar foot"><button id="renameCancel">Abbrechen</button><button id="renameOk" class="primary">Umbenennen</button></div>
+</dialog>
+
+<dialog id="printDlg" class="small">
+  <div class="bar"><b>Drucken</b><span id="printName" class="meta"></span></div>
+  <div class="body">
+    <label class="t" for="printerSel">Drucker</label>
+    <select id="printerSel"></select>
+  </div>
+  <div class="bar foot"><button id="printCancel">Abbrechen</button><button id="printOk" class="primary">Drucken</button></div>
+</dialog>
+
+<dialog id="confirmDlg" class="small">
+  <div class="bar"><b id="confirmTitle">Formular löschen</b></div>
+  <div class="body"><p id="confirmText"></p></div>
+  <div class="bar foot"><button id="confirmCancel">Abbrechen</button><button id="confirmOk" class="primary">Löschen</button></div>
+</dialog>
+
+<!-- Ersatz für das zweite Fenster, wenn die Oberfläche ohne Tauri im Browser läuft -->
+<dialog id="formDlg">
+  <div class="bar"><b>Formular</b><span id="dlgFormMeta" class="meta"></span><button id="formDlgClose">Schließen</button></div>
+  <div id="dlgForm"></div>
+  <div class="bar"><button id="dlgFill" class="primary">Ausgewählte Dokumente ausfüllen</button></div>
+</dialog>
+<iframe id="printFrame" sandbox="allow-same-origin allow-modals"></iframe>
+
+<script type="module">
+// Private module import. Nothing is attached to window, so injected script has
+// no handle on the IPC bridge or the filesystem API.
+import { invoke, listen } from "./vendor/tauri-api.js";
+import { renderFields, collectValues, esc } from "./form-ui.js";
+const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+const W14 = "http://schemas.microsoft.com/office/word/2010/wordml";
+const $ = id => document.getElementById(id);
+const native = typeof window.__TAURI_INTERNALS__ !== "undefined";  // inside the Tauri shell?
+
+const MAX_FILE = 25 * 1024 * 1024;   // a .docx larger than this is not a form
+const MAX_PART = 40 * 1024 * 1024;   // guards against a zip bomb in document.xml
+
+let docs = [];      // { name, buffer, selected }
+let results = [];   // { name, blob } — immer die zuletzt ausgefüllten
+// Jede Gruppe ist ein eigenes Formular:
+// { id, name, favorite, docs:[{name,buffer}], fields, values, loaded }
+let groups = [];
+let activeId = null;   // Gruppe, deren Formularfenster gerade offen ist
+
+/* ---------- loading ---------- */
+$("pick").onchange = e => addFiles(e.target.files);
+const drop = $("drop");
+drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
+drop.ondragleave = () => drop.classList.remove("over");
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove("over"); addFiles(e.dataTransfer.files); };
+
+async function addFiles(list) {
+  const skipped = [];
+  for (const f of list) {
+    if (!f.name.toLowerCase().endsWith(".docx")) continue;
+    if (f.size > MAX_FILE) { skipped.push(f.name); continue; }
+    docs.push({ name: f.name, buffer: await f.arrayBuffer(), selected: true });
+  }
+  renderFiles();
+  if (skipped.length) setStatus(`Zu groß (max. ${MAX_FILE / 1048576} MB): ${skipped.join(", ")}`, true);
+}
+
+// JSZip knows the declared size before it decompresses; refuse the absurd ones.
+async function partText(zip, path) {
+  const entry = zip.file(path);
+  const declared = entry && entry._data && entry._data.uncompressedSize;
+  if (declared > MAX_PART) throw new Error("Das Dokument ist unplausibel groß.");
+  return entry.async("string");
+}
+function renderFiles() {
+  const ul = $("files"); ul.innerHTML = "";
+  docs.forEach((d, i) => {
+    const li = document.createElement("li"); li.className = "file";
+    li.innerHTML = `<input type="checkbox" id="d${i}" ${d.selected ? "checked" : ""}>
+      <label for="d${i}" title="${esc(d.name)}">${esc(d.name)}</label>
+      <button class="x" aria-label="${esc(d.name)} entfernen" title="Entfernen">✕</button>`;
+    li.querySelector("input").onchange = e => { d.selected = e.target.checked; updateButtons(); };
+    li.querySelector(".x").onclick = () => { docs.splice(i, 1); renderFiles(); };
+    ul.appendChild(li);
+  });
+  updateButtons();
+}
+function updateButtons() {
+  const chosen = docs.filter(d => d.selected).length, allOn = docs.length > 0 && chosen === docs.length;
+  $("docCount").textContent = docs.length ? `${chosen} von ${docs.length} ausgewählt` : "";
+  $("build").disabled = !chosen;
+  $("all").disabled = !docs.length;
+  $("all").textContent = allOn ? "Keine" : "Alle";
+  $("all").title = allOn ? "Auswahl aufheben" : "Alle Dokumente auswählen";
+  // Die Kacheln hängen nicht mehr an dieser Auswahl: jede Gruppe hat ihre
+  // eigenen Dokumente, das Abwählen hier betrifft nur die nächste Gruppe.
+}
+$("all").onclick = () => {
+  const allOn = docs.length && docs.every(d => d.selected);
+  docs.forEach(d => d.selected = !allOn); renderFiles();
+};
+
+/* ---------- scanning ---------- */
+const PARTS = /^word\/(document|header\d*|footer\d*|footnotes|endnotes)\.xml$/;
+
+// Aus Words Platzhaltertext eine Feldbezeichnung machen. Vorlagen haben oft
+// weder w:tag noch w:alias — dann hieße sonst jedes Feld nur „Feld 7“.
+function labelFrom(hint) {
+  const s = String(hint || "").replace(/\s+/g, " ").trim().replace(/:$/, "");
+  return s.length > 60 ? s.slice(0, 59).trimEnd() + "…" : s;
+}
+
+// Reihenfolge der Teile — Lesen und Ausfüllen müssen dieselbe verwenden,
+// sonst zeigt die Positionsnummer im Schlüssel auf ein anderes Steuerelement.
+const partPaths = zip => Object.keys(zip.files).filter(p => PARTS.test(p));
+
+const sdtText = sdt => {
+  const c = sdt.getElementsByTagNameNS(W, "sdtContent")[0];
+  return c ? Array.from(c.getElementsByTagNameNS(W, "t")).map(t => t.textContent).join("") : "";
+};
+
+// Ein Steuerelement wiedererkennen, auch über Dokumentgrenzen hinweg. Vorlagen
+// tragen oft weder w:tag noch w:alias; dann identifiziert der Platzhaltertext
+// das Feld, damit dieselbe Frage in mehreren Dokumenten gemeinsam ausgefüllt
+// wird. Lesen und Ausfüllen müssen hier exakt dasselbe berechnen.
+function sdtKey(pr, sdt, pos, docName) {
+  const val = n => { const e = pr.getElementsByTagNameNS(W, n)[0]; return e ? e.getAttributeNS(W, "val") : ""; };
+  const tag = val("tag"); if (tag) return "tag:" + tag;
+  const alias = val("alias"); if (alias) return "alias:" + alias;
+  if (pr.getElementsByTagNameNS(W, "showingPlcHdr").length) {
+    const t = sdtText(sdt).replace(/\s+/g, " ").trim();
+    if (t) return "hint:" + t;
+  }
+  // Nichts Wiedererkennbares: ein bereits ausgefülltes Feld ohne Tag. Die
+  // Position bleibt auf das Dokument beschränkt — zwei verschieden lange
+  // Dokumente würden sonst an derselben Stelle fremde Felder zusammenwerfen.
+  return "pos:" + docName + "#" + pos;
+}
+
+async function readControls(buffer, docName) {
+  const zip = await JSZip.loadAsync(buffer), found = [];
+  let pos = 0;
+  for (const path of partPaths(zip)) {
+    const xml = new DOMParser().parseFromString(await partText(zip, path), "application/xml");
+    for (const sdt of Array.from(xml.getElementsByTagNameNS(W, "sdt"))) {
+      const pr = sdt.getElementsByTagNameNS(W, "sdtPr")[0]; if (!pr) continue;
+      const key = sdtKey(pr, sdt, pos, docName); pos++;
+      const val = n => { const e = pr.getElementsByTagNameNS(W, n)[0]; return e ? e.getAttributeNS(W, "val") : ""; };
+      const has = n => pr.getElementsByTagNameNS(W, n).length > 0;
+      let type = "text", options = [];
+      if (has("date")) type = "date";
+      else if (has("dropDownList") || has("comboBox")) {
+        type = has("dropDownList") ? "dropdown" : "combo";
+        options = Array.from(pr.getElementsByTagNameNS(W, "listItem")).map(li => li.getAttributeNS(W, "displayText") || li.getAttributeNS(W, "value"));
+      } else if (pr.getElementsByTagNameNS(W14, "checkbox").length) type = "checkbox";
+      else if (has("richText")) type = "rich";
+      const tag = val("tag"), title = val("alias");
+      const current = sdtText(sdt);
+      const isPlaceholder = has("showingPlcHdr");
+      // Der Text eines noch nicht ausgefüllten Steuerelements ist Words Platzhalter,
+      // kein Wert. Er benennt das Feld und steht grau im Eingabefeld — geschrieben
+      // wird er nie, sonst verlöre die Vorlage bei jedem Ausfüllen ihre Felder.
+      found.push({ key, tag, title, type, options, current: isPlaceholder ? "" : current, hint: isPlaceholder ? current : "" });
+    }
+  }
+  return found;
+}
+
+/* ---------- Gruppen ---------- */
+// Jede Kachel ist eine eigene Gruppe: eigene Dokumente, eigene Felder, eigene
+// Antworten. Als Favorit gemerkte Gruppen liegen im Datenordner der App und
+// sind beim nächsten Start wieder da.
+const groupById = id => groups.find(g => g.id === id);
+function groupMeta(g) {
+  const f = g.fields.length, n = g.docs.length;
+  return `${f} Feld${f === 1 ? "" : "er"} · ${n} Dokument${n === 1 ? "" : "e"}`;
+}
+// Mehrere Kacheln, die alle „Formular“ heißen, wären nicht zu unterscheiden.
+function defaultName(list) {
+  const first = list[0] && list[0].name.replace(/\.docx$/i, "").trim();
+  return first || "Formular";
+}
+
+// Die Felder der Dokumente einer Gruppe lesen und zusammenführen.
+async function scanFields(list) {
+  const byKey = new Map(); let n = 0, done = 0;
+  for (const d of list) {
+    setStatus(`Dokument ${++done} von ${list.length} wird gelesen…`);
+    const ctrls = await readControls(d.buffer, d.name);
+    ctrls.forEach(c => {
+      const key = c.key;   // gleicher Schlüssel in mehreren Dokumenten = ein Feld
+      if (byKey.has(key)) {
+        const prev = byKey.get(key); prev.count++;
+        if (c.current && !prev.current) prev.current = c.current;
+        if (c.hint && !prev.hint) prev.hint = c.hint;
+        return;
+      }
+      byKey.set(key, { key, tag: c.tag, title: c.title || c.tag || labelFrom(c.hint) || `Feld ${++n}`,
+                       type: c.type, options: c.options || [], current: c.current, hint: c.hint, count: 1 });
+    });
+  }
+  return [...byKey.values()];
+}
+
+async function buildForm() {
+  const chosen = docs.filter(d => d.selected);
+  if (!chosen.length) return;
+  busy($("build"), true);
+  try {
+    // eigene Kopie: die Gruppe überlebt es, wenn das Dokument links entfernt wird
+    const own = chosen.map(d => ({ name: d.name, buffer: d.buffer }));
+    const fields = await scanFields(own);
+    if (!fields.length) {
+      if (!groups.length) renderEmpty("nofields");
+      setStatus("In diesen Dokumenten stehen keine Inhaltssteuerelemente.", true);
+    } else {
+      groups.push({ id: crypto.randomUUID(), name: defaultName(own), favorite: false,
+                    docs: own, fields, values: {}, loaded: true });
+      renderTiles();
+      setStatus("");
+    }
+  } catch (e) {
+    setStatus("Ein Dokument konnte nicht gelesen werden: " + e.message, true);
+  }
+  busy($("build"), false);
+}
+$("build").onclick = buildForm;
+
+/* ---------- Kacheln ---------- */
+// „start“ = es gibt noch keine Gruppe, „nofields“ = gelesen, aber die Dokumente
+// enthalten keine Steuerelemente. Zwei verschiedene Aussagen, deshalb zwei Texte.
+const EMPTY = {
+  start: `<b>Noch kein Formular</b>Links Dokumente hinzufügen und daraus das Formular
+      mit den gemeinsamen Inhaltssteuerelementen erstellen.`,
+  nofields: `<b>Keine Inhaltssteuerelemente gefunden</b>Diese Dokumente enthalten keine
+      ausfüllbaren Felder. In Word unter Entwicklertools ▸ Steuerelemente hinzufügen und das Formular erneut erstellen.`
+};
+function renderEmpty(kind) {
+  $("form").innerHTML = `<div class="empty">${EMPTY[kind]}</div>`;
+  $("formMeta").textContent = "";
+}
+
+function renderTiles() {
+  if (!groups.length) { renderEmpty("start"); return; }
+  const form = $("form"); form.innerHTML = "";
+  $("formMeta").textContent = `${groups.length} Gruppe${groups.length === 1 ? "" : "n"}`;
+  const wrap = document.createElement("div"); wrap.className = "tile-wrap";
+  for (const g of groups) {
+    const b = document.createElement("button");
+    b.className = "tile"; b.type = "button"; b.dataset.id = g.id;
+    b.title = `${g.name} in einem eigenen Fenster öffnen`;
+    b.innerHTML = `${g.favorite ? `<span class="star" aria-label="Favorit" title="Favorit">★</span>` : ""}
+      <span class="glyph" aria-hidden="true">\u{1F4DD}</span>
+      <span class="name">${esc(g.name)}</span><span class="meta">${esc(groupMeta(g))}</span>`;
+    b.onclick = () => openForm(g.id);
+    // ohne preventDefault käme zusätzlich das Menü von WebView2; stopPropagation
+    // verhindert, dass der Schließen-Handler am Fenster gleich wieder zumacht
+    b.oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); openMenu(e.clientX, e.clientY, g.id); };
+    b.onkeydown = e => {
+      if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
+        e.preventDefault();
+        const r = b.getBoundingClientRect();
+        openMenu(r.left + 12, r.bottom - 8, g.id);
+      }
+    };
+    wrap.appendChild(b);
+  }
+  form.appendChild(wrap);
+}
+
+/* ---------- Kontextmenü der Kachel ---------- */
+const menu = $("tileMenu");
+const menuOpen = () => !menu.hidden;
+let menuTarget = null;   // Kachel, auf die geklickt wurde
+
+function openMenu(x, y, id) {
+  menuTarget = id;
+  const g = groupById(id);
+  menu.querySelector("[data-a=fav]").textContent =
+    g && g.favorite ? "Favorit aufheben" : "Als Favorit merken";
+  menu.hidden = false;
+  // erst einblenden, dann messen und am Bildschirmrand umklappen
+  const w = menu.offsetWidth, h = menu.offsetHeight;
+  menu.style.left = Math.max(4, Math.min(x, innerWidth - w - 4)) + "px";
+  menu.style.top = Math.max(4, Math.min(y, innerHeight - h - 4)) + "px";
+  const first = menu.querySelector("button:not(:disabled)");
+  if (first) first.focus();
+}
+function closeMenu(toTile) {
+  if (menu.hidden) return;
+  menu.hidden = true;
+  if (toTile && menuTarget) {
+    const t = $("form").querySelector(`.tile[data-id="${menuTarget}"]`);
+    if (t) t.focus();
+  }
+}
+menu.onclick = e => {
+  const b = e.target.closest("button[data-a]");
+  if (!b || b.disabled) return;
+  const id = menuTarget;
+  closeMenu(false);
+  if (b.dataset.a === "rename") renameForm(id);
+  else if (b.dataset.a === "refresh") refreshGroup(id);
+  else if (b.dataset.a === "fav") toggleFavorite(id);
+  else if (b.dataset.a === "delete") deleteForm(id);
+};
+addEventListener("keydown", e => {
+  if (!menuOpen()) return;
+  if (e.key === "Escape") { e.preventDefault(); closeMenu(true); return; }
+  if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+  e.preventDefault();
+  const items = [...menu.querySelectorAll("button:not(:disabled)")];
+  const i = items.indexOf(document.activeElement);
+  items[e.key === "ArrowDown" ? (i + 1) % items.length : (i - 1 + items.length) % items.length].focus();
+});
+addEventListener("mousedown", e => { if (!menu.contains(e.target)) closeMenu(false); });
+addEventListener("contextmenu", e => { if (!menu.contains(e.target)) closeMenu(false); });
+addEventListener("blur", () => closeMenu(false));
+addEventListener("resize", () => closeMenu(false));
+
+/* ---------- Speichern der Favoriten ---------- */
+// meta.json trägt Name, Felder und Antworten — nie Dokumentinhalte. Die gehen
+// einzeln über group_save_doc, sonst läge alles auf einmal in der IPC-Grenze.
+const metaOf = g => JSON.stringify({
+  name: g.name, fields: g.fields, values: g.values, docs: g.docs.map(d => d.name)
+});
+async function persistMeta(g) {
+  if (!native || !g || !g.favorite) return;
+  await invoke("group_save_meta", { id: g.id, payload: metaOf(g) }).catch(() => {});
+}
+async function saveGroup(g) {
+  await ensureLoaded(g);
+  await invoke("group_save_meta", { id: g.id, payload: metaOf(g) });
+  for (let i = 0; i < g.docs.length; i++) {
+    await invoke("group_save_doc", { id: g.id, index: i, bytes: Array.from(new Uint8Array(g.docs[i].buffer)) });
+  }
+}
+// Bytes einer gespeicherten Gruppe erst holen, wenn sie gebraucht werden; beim
+// Start würden sonst alle Dokumente durch die IPC-Grenze wandern.
+async function ensureLoaded(g) {
+  if (g.loaded) return;
+  for (let i = 0; i < g.docs.length; i++) {
+    const bytes = await invoke("group_read_doc", { id: g.id, index: i });
+    g.docs[i].buffer = new Uint8Array(bytes).buffer;
+  }
+  g.loaded = true;
+}
+async function toggleFavorite(id) {
+  const g = groupById(id); if (!g) return;
+  if (!native) { setStatus("Favoriten gibt es nur in der App.", true); return; }
+  g.favorite = !g.favorite;
+  renderTiles();
+  try {
+    if (g.favorite) { await saveGroup(g); setStatus(`„${g.name}“ bleibt gespeichert.`); }
+    else { await invoke("group_delete", { id }); setStatus(`„${g.name}“ ist kein Favorit mehr.`); }
+  } catch (e) {
+    g.favorite = !g.favorite; renderTiles();   // Zustand nicht vortäuschen
+    setStatus(String(e), true);
+  }
+}
+// Favoriten vom letzten Mal zurückholen.
+async function loadFavorites() {
+  if (!native) return;
+  let stored = [];
+  try { stored = await invoke("group_list"); } catch { return; }
+  for (const s of stored) {
+    let m; try { m = JSON.parse(s.meta); } catch { continue; }
+    groups.push({
+      id: s.id, name: m.name || "Formular", favorite: true,
+      docs: (m.docs || []).map(name => ({ name, buffer: null })),
+      fields: m.fields || [], values: m.values || {}, loaded: false
+    });
+  }
+  if (groups.length) renderTiles();
+}
+
+/* ---------- Umbenennen / Aktualisieren / Löschen ---------- */
+let renameTarget = null;
+
+function renameForm(id) {
+  const g = groupById(id); if (!g) return;
+  renameTarget = id;
+  $("renameInput").value = g.name;
+  $("renameDlg").showModal();
+  $("renameInput").select();
+}
+$("renameCancel").onclick = () => $("renameDlg").close();
+$("renameOk").onclick = async () => {
+  const g = groupById(renameTarget);
+  $("renameDlg").close();
+  if (!g) return;
+  g.name = $("renameInput").value.trim() || "Formular";
+  renderTiles();
+  await persistMeta(g);
+};
+$("renameInput").onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); $("renameOk").click(); } };
+
+// Aktualisieren liest die Dokumente der Gruppe neu; die Antworten fallen dabei
+// weg, weil sich die Felder geändert haben können.
+async function refreshGroup(id) {
+  const g = groupById(id); if (!g) return;
+  try {
+    await ensureLoaded(g);
+    g.fields = await scanFields(g.docs);
+    g.values = {};
+    renderTiles();
+    if (native && activeId === id) { invoke("close_form_window").catch(() => {}); activeId = null; }
+    await persistMeta(g);
+    setStatus(`„${g.name}“ neu gelesen.`);
+  } catch (e) { setStatus("Ein Dokument konnte nicht gelesen werden: " + e.message, true); }
+}
+
+// Ein Nachfragedialog für alles, was etwas wegwirft. Die Aktion wird gemerkt
+// und erst beim Bestätigen ausgeführt.
+let confirmAction = null;
+function askConfirm(title, text, action) {
+  $("confirmTitle").textContent = title;
+  $("confirmText").textContent = text;
+  confirmAction = action;
+  $("confirmDlg").showModal();
+}
+$("confirmCancel").onclick = () => { confirmAction = null; $("confirmDlg").close(); };
+$("confirmOk").onclick = () => {
+  $("confirmDlg").close();
+  const run = confirmAction; confirmAction = null;
+  if (run) run();
+};
+
+function deleteForm(id) {
+  const g = groupById(id); if (!g) return;
+  if (Object.keys(g.values).length) {   // nur nachfragen, wenn etwas verloren ginge
+    askConfirm("Formular löschen",
+      `„${g.name}“ löschen? Die eingegebenen Werte gehen verloren. Die geladenen Dokumente bleiben erhalten.`,
+      () => discardGroup(id));
+    return;
+  }
+  discardGroup(id);
+}
+
+async function discardGroup(id) {
+  const g = groupById(id); if (!g) return;
+  groups = groups.filter(x => x.id !== id);
+  renderTiles();
+  if (native && g.favorite) await invoke("group_delete", { id }).catch(() => {});
+  // sonst zeigt das Formularfenster Felder, die es nicht mehr gibt
+  if (activeId === id) {
+    if (native) invoke("close_form_window").catch(() => {});
+    else $("formDlg").close();
+    activeId = null;
+  }
+  setStatus(`„${g.name}“ gelöscht.`);
+}
+
+/* ---------- form window ---------- */
+// Nur Feldbeschreibungen und Werte gehen hinüber, nie Dokumentinhalte: die liegen
+// als ArrayBuffer im Speicher dieses Fensters und wären über IPC viel zu groß.
+async function openForm(id) {
+  const g = groupById(id);
+  if (!g || !g.fields.length) return;
+  activeId = id;
+  if (native) {
+    const payload = JSON.stringify({ id: g.id, fields: g.fields, meta: groupMeta(g), values: g.values });
+    try { await invoke("open_form_window", { payload, id: g.id }); }
+    catch (e) { setStatus(String(e), true); }
+    return;
+  }
+  // Ohne Tauri gibt es kein zweites Fenster — derselbe Inhalt als Dialog.
+  $("dlgFormMeta").textContent = groupMeta(g);
+  renderFields($("dlgForm"), g.fields, g.values);
+  $("formDlg").showModal();
+}
+$("formDlgClose").onclick = () => {
+  const g = groupById(activeId);
+  if (g) { g.values = collectValues($("dlgForm"), g.fields); persistMeta(g); }
+  $("formDlg").close();
+};
+$("dlgFill").onclick = () => {
+  const g = groupById(activeId);
+  $("formDlg").close();
+  if (!g) return;
+  runFill(g.id, collectValues($("dlgForm"), g.fields));
+};
+
+/* ---------- filling ---------- */
+// Die Werte kommen aus dem Formularfenster, die Dokumente bleiben hier.
+async function runFill(id, entered) {
+  const g = groupById(id);
+  if (!g || !g.fields.length) return;
+  g.values = entered || {};
+  await persistMeta(g);
+  const values = new Map(Object.entries(g.values));
+  results = []; let done = 0;
+  try {
+    await ensureLoaded(g);
+    for (const d of g.docs) {
+      setStatus(`Dokument ${++done} von ${g.docs.length} wird ausgefüllt…`);
+      const blob = await fillDoc(d, values);
+      results.push({ name: d.name.replace(/\.docx$/i, "") + "_ausgefuellt.docx", blob });
+    }
+    renderResults(); setStatus(`${results.length} Dokument${results.length === 1 ? "" : "e"} ausgefüllt.`);
+  } catch (e) { setStatus("Ein Dokument konnte nicht ausgefüllt werden: " + e.message, true); }
+}
+
+// Ausfüllen im Formularfenster: erst schließen, dann füllen — Fortschritt und
+// Ergebnisse gehören ins Hauptfenster, damit alles an einer Stelle steht.
+if (native) {
+  // Eingaben aus dem Formularfenster mitschreiben, damit sie beim erneuten
+  // Öffnen wieder dastehen — auch wenn das Fenster einfach geschlossen wurde.
+  listen("docfill://values", e => {
+    try {
+      const p = JSON.parse(e.payload);
+      const g = groupById(p.id);
+      if (g) { g.values = p.values || {}; persistMeta(g); }
+    } catch { /* nichts eingegeben */ }
+  });
+  listen("docfill://fill", async e => {
+    let p = {};
+    try { p = JSON.parse(e.payload); } catch { /* nichts eingegeben */ }
+    await invoke("close_form_window").catch(() => {});
+    activeId = null;
+    runFill(p.id, p.values || {});
+  });
+}
+
+loadFavorites();
+
+async function fillDoc(d, values) {
+  const zip = await JSZip.loadAsync(d.buffer);
+  let pos = 0;   // läuft über alle Teile, genau wie in readControls
+  for (const path of partPaths(zip)) {
+    const xml = new DOMParser().parseFromString(await partText(zip, path), "application/xml");
+    for (const sdt of Array.from(xml.getElementsByTagNameNS(W, "sdt"))) {
+      const pr = sdt.getElementsByTagNameNS(W, "sdtPr")[0]; if (!pr) continue;
+      const key = sdtKey(pr, sdt, pos, d.name); pos++;
+      if (!values.has(key)) continue;
+      replaceSdt(xml, sdt, values.get(key));
+    }
+    zip.file(path, new XMLSerializer().serializeToString(xml));
+  }
+  return zip.generateAsync({ type: "blob", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+}
+
+// Put the text into the first run (keeping its formatting), drop the other runs, then unwrap the control.
+function replaceSdt(xml, sdt, text) {
+  const content = sdt.getElementsByTagNameNS(W, "sdtContent")[0]; if (!content) return;
+  const runs = Array.from(content.getElementsByTagNameNS(W, "r"));
+  let run = runs[0];
+  if (!run) { run = xml.createElementNS(W, "w:r"); (content.getElementsByTagNameNS(W, "p")[0] || content).appendChild(run); }
+  runs.slice(1).forEach(r => r.parentNode.removeChild(r));
+  Array.from(run.childNodes).filter(n => n.namespaceURI === W && n.localName !== "rPr").forEach(n => run.removeChild(n));
+  const lines = text.split(/\r?\n/);
+  lines.forEach((line, k) => {
+    if (k) run.appendChild(xml.createElementNS(W, "w:br"));
+    const t = xml.createElementNS(W, "w:t"); t.setAttribute("xml:space", "preserve"); t.textContent = line; run.appendChild(t);
+  });
+  // remove the placeholder style if the run still carries it
+  Array.from(run.getElementsByTagNameNS(W, "rStyle")).filter(s => /PlaceholderText/i.test(s.getAttributeNS(W, "val"))).forEach(s => s.parentNode.removeChild(s));
+  const parent = sdt.parentNode;
+  while (content.firstChild) parent.insertBefore(content.firstChild, sdt);
+  parent.removeChild(sdt);
+}
+
+/* ---------- results: open / save / print ---------- */
+function renderResults() {
+  const box = $("results"); box.innerHTML = ""; box.className = "results";
+  results.forEach((r, i) => {
+    const div = document.createElement("div"); div.className = "result";
+    div.style.animationDelay = Math.min(i, 6) * 25 + "ms";
+    div.innerHTML = `<span class="name" title="${esc(r.name)}">${esc(r.name)}</span><span class="size">${size(r.blob.size)}</span>
+      <span class="btn-group"><button data-a="open">Öffnen</button><button data-a="save">Speichern</button><button data-a="print">Drucken</button></span>
+      <button class="x" data-a="del" title="Aus der Liste entfernen" aria-label="${esc(r.name)} aus der Liste entfernen">✕</button>`;
+    div.querySelector('[data-a=open]').onclick = () => openPreview(r);
+    div.querySelector('[data-a=save]').onclick = () => save(r);
+    div.querySelector('[data-a=print]').onclick = () => print(r);
+    div.querySelector('[data-a=del]').onclick = () => removeResult(r);
+    box.appendChild(div);
+  });
+  $("resultCount").textContent = results.length ? `${results.length} fertig` : "";
+  $("deleteAll").disabled = !results.length;
+  $("saveAll").disabled = !results.length;
+}
+// Die Liste hält nur die ausgefüllten Kopien im Speicher; Entfernen wirft
+// nichts von der Platte weg, schon gespeicherte Dateien bleiben liegen.
+function removeResult(r) {
+  results = results.filter(x => x !== r);
+  renderResults();
+  setStatus(`${r.name} aus der Liste entfernt.`);
+}
+$("deleteAll").onclick = () => {
+  if (!results.length) return;
+  const n = results.length;
+  askConfirm("Ausgefüllte Dokumente löschen",
+    `${n} ausgefüllte${n === 1 ? "s" : ""} Dokument${n === 1 ? "" : "e"} aus der Liste entfernen? Bereits gespeicherte Dateien bleiben erhalten.`,
+    () => { results = []; renderResults(); setStatus("Liste geleert."); });
+};
+
+const bytes = async blob => new Uint8Array(await blob.arrayBuffer());
+
+async function save(r) {
+  if (!native) { const a = document.createElement("a"); a.href = URL.createObjectURL(r.blob); a.download = r.name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); return; }
+  // the destination is chosen by a native dialog inside Rust; the page never names a path
+  const saved = await invoke("save_document", { name: r.name, bytes: Array.from(await bytes(r.blob)) });
+  if (saved) setStatus(`${saved} gespeichert.`);
+}
+$("saveAll").onclick = async () => {
+  if (!native) { const zip = new JSZip(); results.forEach(r => zip.file(r.name, r.blob)); save({ name: "ausgefuellte-dokumente.zip", blob: await zip.generateAsync({ type: "blob" }) }); return; }
+  if (!await invoke("save_all_begin")) return;      // folder is chosen and held in Rust
+  busy($("saveAll"), true);
+  try {
+    let done = 0;
+    for (const r of results) {
+      setStatus(`Dokument ${++done} von ${results.length} wird gespeichert…`);
+      await invoke("save_all_write", { name: r.name, bytes: Array.from(await bytes(r.blob)) });
+    }
+    const dir = await invoke("save_all_finish");
+    setStatus(`${results.length} Dokumente in ${dir} gespeichert.`);
+  } catch (e) {
+    await invoke("save_all_finish").catch(() => {});
+    setStatus(String(e), true);
+  }
+  busy($("saveAll"), false);
+};
+let current = null;
+async function openPreview(r) {
+  if (native) {           // hand the file to Word / Pages / LibreOffice
+    await invoke("open_document", { name: r.name, bytes: Array.from(await bytes(r.blob)) }); return;
+  }
+  current = r; $("dlgName").textContent = r.name;
+  const pv = $("preview").contentDocument;
+  pv.open();
+  pv.write('<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="margin:0;padding:12px"></body></html>');
+  pv.close();
+  await docx.renderAsync(r.blob, pv.body, null, { inWrapper: true, ignoreWidth: false });
+  $("dlg").showModal();
+}
+$("dlgClose").onclick = () => $("dlg").close();
+$("dlgSave").onclick = () => current && save(current);
+$("dlgPrint").onclick = () => current && print(current);
+// Vor dem Drucken den Drucker wählen. Die Liste wird einmal geholt, die letzte
+// Wahl bleibt für die nächsten Ausdrucke vorbelegt.
+let printers = null, lastPrinter = "", printTarget = null;
+
+async function print(r) {
+  if (native) {
+    printTarget = r;
+    if (!printers) {
+      try { printers = await invoke("list_printers"); } catch { printers = []; }
+    }
+    if (!printers.length) { sendToPrinter(r, ""); return; }   // keiner gefunden: Standard nehmen
+    const pick = lastPrinter || (printers.find(p => p.default) || printers[0]).name;
+    $("printName").textContent = r.name;
+    $("printerSel").innerHTML = printers.map(p =>
+      `<option value="${esc(p.name)}"${p.name === pick ? " selected" : ""}>${esc(p.name)}${p.default ? " (Standard)" : ""}</option>`).join("");
+    $("printDlg").showModal();
+    return;
+  }
+  const fr = $("printFrame"), doc = fr.contentDocument;
+  doc.open(); doc.write('<!DOCTYPE html><html><head><meta charset="utf-8"></head><body></body></html>'); doc.close();
+  await docx.renderAsync(r.blob, doc.body, null, { inWrapper: false, ignoreWidth: false });
+  fr.contentWindow.focus(); fr.contentWindow.print();
+}
+$("printCancel").onclick = () => $("printDlg").close();
+$("printOk").onclick = () => {
+  const p = $("printerSel").value;
+  $("printDlg").close();
+  lastPrinter = p;
+  sendToPrinter(printTarget, p);
+};
+async function sendToPrinter(r, printer) {
+  if (!r) return;
+  setStatus("Wird gedruckt…");
+  try {
+    const how = await invoke("print_document", { name: r.name, bytes: Array.from(await bytes(r.blob)), printer });
+    setStatus(how === "printed"
+      ? `${r.name} an ${printer || "den Standarddrucker"} gesendet.`
+      : `${r.name} als PDF geöffnet — von dort drucken.`);
+  } catch (e) { setStatus(String(e), true); }
+}
+
+/* ---------- helpers ---------- */
+function setStatus(m, err) { const s = $("status"); s.textContent = m; s.className = err ? "error" : ""; }
+function busy(btn, on) { btn.disabled = on; btn.setAttribute("aria-busy", on); }
+function size(b) { return b < 1024 ? b + " B" : b < 1048576 ? Math.round(b / 1024) + " KB" : (b / 1048576).toFixed(1) + " MB"; }
+// esc / toISO / fromISO stehen in form-ui.js, weil das Formularfenster sie auch braucht.
+</script>
+</body>
+</html>

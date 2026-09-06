@@ -1,0 +1,10 @@
+# Git wandelt unter Windows standardmäßig LF in CRLF um. Für die mitgelieferten
+# Bibliotheken darf das nicht passieren: src/vendor/SHA256SUMS prüft sie
+# byteweise, eine Umwandlung macht die Prüfsummen ungültig.
+src/vendor/** -text
+
+# Binärdateien ebenfalls unangetastet lassen
+*.png  -text
+*.ico  -text
+*.icns -text
+*.docx -text
