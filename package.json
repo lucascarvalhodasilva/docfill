@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",
+    "check": "node scripts/check.mjs",
     "tauri": "tauri"
   },
   "devDependencies": {

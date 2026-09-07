@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "identifier": "de.carvalhodasilva.docfill",
   "build": {
-    "frontendDist": "../src"
+    "frontendDist": "../src",
+    "beforeBuildCommand": "npm run check"
   },
   "app": {
     "withGlobalTauri": false,
