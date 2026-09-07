@@ -12,10 +12,15 @@
 <style>
   /* Farben, Formularfelder, Schaltflächen und die Statuszeile stehen in
      app.css und werden mit form.html geteilt. Hier nur das Seitenlayout. */
-  body { display:grid; grid-template-columns:260px minmax(0,1fr) }
+  body { display:grid; grid-template-columns:274px minmax(0,1fr);
+         transition:grid-template-columns var(--dur) var(--ease) }
+  body[data-sidebar=collapsed] { grid-template-columns:58px minmax(0,1fr) }
 
   /* ---- sidebar ---- */
-  aside { background:var(--sidebar); border-right:1px solid var(--line); padding:29px 12px 14px; overflow:auto;
+  /* Eigene Kachel, kein Streifen am Fensterrand: gleiche Ränder, Ecken und
+     Abstände wie die Panels in main, damit beide Seiten auf einer Linie sitzen. */
+  aside { background:var(--sidebar); border:1px solid var(--line); border-radius:var(--r);
+          margin:14px 0 14px 14px; padding:14px; overflow:auto;
           display:flex; flex-direction:column; gap:10px }
   main { padding:14px; overflow:hidden; display:grid; gap:12px;
          grid-template-columns:minmax(0,1fr); grid-template-rows:minmax(0,1fr) auto }
@@ -24,6 +29,39 @@
   h2 .meta { font-weight:400; color:var(--muted) }
   aside > h2, section.panel > h2 { padding-bottom:9px; border-bottom:1px solid var(--line) }
   aside > .row, section.panel > .row { padding-top:9px; border-top:1px solid var(--line) }
+  /* margin-top:auto hält die Leiste unten, auch solange die Liste leer ist und
+     nichts sie nach unten schiebt. Bei vollem Panel bleibt sie wirkungslos. */
+  aside > .row { margin-top:auto }
+  /* Kein Abstandhalter zwischen den beiden: in der schmalen Leiste riss der
+     die Schaltflächen an die Ränder und ließ ein Loch dazwischen. Stattdessen
+     nimmt die Hauptaktion den freien Platz — größeres Ziel, klare Rangfolge. */
+  aside > .row .primary { flex:1 }
+  aside > .row button { padding-block:7px }
+
+  /* ---- Seitenleiste einklappen ----
+     Eingeklappt bleibt eine Schiene stehen: die Schaltfläche behält ihren
+     Platz, statt dass die Leiste ganz verschwindet und der Weg zurück gesucht
+     werden muss. Die Zahl darunter zeigt, dass die Auswahl noch da ist. */
+  #toggleSidebar { align-self:center; flex:none; display:grid; place-items:center; width:26px; height:26px;
+                   padding:0; background:none; border:1px solid transparent; border-radius:var(--r-sm);
+                   color:var(--muted); font:inherit; font-size:13px; line-height:1; cursor:pointer;
+                   transition:background var(--dur) var(--ease), color var(--dur) var(--ease) }
+  #toggleSidebar:hover { background:var(--raised); color:var(--ink) }
+  #toggleSidebar::before { content:"‹" }
+  body[data-sidebar=collapsed] #toggleSidebar::before { content:"›" }
+  #railCount { display:none }
+
+  body[data-sidebar=collapsed] aside { padding:10px 0; gap:8px; align-items:center; overflow:hidden }
+  body[data-sidebar=collapsed] aside > h2 { padding-bottom:0; border-bottom:0 }
+  body[data-sidebar=collapsed] aside > .drop,
+  body[data-sidebar=collapsed] aside > ul,
+  body[data-sidebar=collapsed] aside > .row,
+  body[data-sidebar=collapsed] aside > h2 > .title,
+  body[data-sidebar=collapsed] aside > h2 > .meta { display:none }
+  body[data-sidebar=collapsed] #railCount { display:block; padding:1px 6px; border-radius:999px;
+                                            background:var(--raised); color:var(--muted); font-size:11px;
+                                            font-variant-numeric:tabular-nums }
+  body[data-sidebar=collapsed] #railCount:empty { display:none }
 
   section.panel { background:var(--surface); border:1px solid var(--line); border-radius:var(--r); padding:14px;
                   display:flex; flex-direction:column; gap:10px; min-height:0 }
@@ -35,7 +73,7 @@
   #results { flex:0 1 auto; max-height:38vh; padding-inline:6px; margin-inline:-6px }
 
   .drop { display:block; position:relative; border:1.5px dashed var(--field-line); border-radius:var(--r);
-          padding:16px 10px; text-align:center; color:var(--muted); cursor:pointer;
+          padding:28px 10px; text-align:center; color:var(--muted); cursor:pointer;
           transition:border-color var(--dur) var(--ease), color var(--dur) var(--ease), background var(--dur) var(--ease) }
   .drop:hover { border-color:var(--accent); color:var(--ink) }
   .drop.over { border-color:var(--accent); color:var(--accent); background:rgba(95,162,224,.08) }
@@ -115,17 +153,18 @@
 
   @media (min-width:1180px) { main { grid-template-columns:minmax(0,1fr) minmax(0,440px); grid-template-rows:minmax(0,1fr) }
     #results { max-height:none } }
-  @media (max-width:760px) { body { grid-template-columns:minmax(0,1fr) } aside { border-right:0; border-bottom:1px solid var(--line) } }
   @media print { body > * { display:none !important } #printFrame { display:block !important } }
 </style>
 </head>
 <body>
-<aside>
-  <h2>Dokumente<span class="meta" id="docCount"></span></h2>
+<aside id="sidebar">
+  <h2><button id="toggleSidebar" type="button" aria-controls="sidebar" aria-expanded="true"></button>
+    <span class="title">Dokumente</span><span class="meta" id="docCount"></span></h2>
+  <span id="railCount" aria-hidden="true"></span>
   <label class="drop" id="drop">.docx-Dateien hierher ziehen<kbd>oder klicken zum Auswählen</kbd>
     <input type="file" id="pick" accept=".docx" multiple></label>
   <ul id="files"></ul>
-  <div class="row"><button id="all" disabled title="Alle Dokumente auswählen">Alle</button><span class="spacer"></span>
+  <div class="row"><button id="all" disabled title="Alle Dokumente auswählen">Alle</button>
     <button id="build" class="primary" disabled>Formular erstellen</button></div>
 </aside>
 
@@ -235,6 +274,37 @@ const MAX_HISTORY = 200 * 1024 * 1024;   // wie MAX_GROUP in lib.rs
 let groups = [];
 let activeId = null;   // Gruppe, deren Formularfenster gerade offen ist
 
+/* ---------- Seitenleiste ----------
+   Unter dieser Breite reicht der Platz nicht mehr für Leiste und Panels
+   nebeneinander; die Leiste klappt dann von selbst ein und beim Überschreiten
+   der Grenze wieder aus. Dazwischen gilt, was zuletzt geklickt wurde. */
+const NARROW = window.matchMedia("(max-width: 820px)");
+const sidebarToggle = $("toggleSidebar");
+
+function setSidebar(collapsed) {
+  document.body.dataset.sidebar = collapsed ? "collapsed" : "open";
+  sidebarToggle.setAttribute("aria-expanded", String(!collapsed));
+  const label = collapsed ? "Seitenleiste ausklappen" : "Seitenleiste einklappen";
+  sidebarToggle.title = label;
+  sidebarToggle.setAttribute("aria-label", label);
+}
+sidebarToggle.onclick = () => setSidebar(document.body.dataset.sidebar !== "collapsed");
+NARROW.addEventListener("change", e => setSidebar(e.matches));
+setSidebar(NARROW.matches);
+
+// Eingeklappt liegt die Ablagefläche verborgen. Wer Dateien über die Schiene
+// zieht, will sie dort ablegen: die Leiste klappt dafür von selbst auf, und
+// die Fläche liegt danach unter dem Zeiger. Sie bleibt offen — nach dem
+// Ablegen will man die Liste sehen.
+const draggingFiles = e => !!e.dataTransfer && [...e.dataTransfer.types].includes("Files");
+for (const type of ["dragenter", "dragover"]) {
+  $("sidebar").addEventListener(type, e => {
+    if (document.body.dataset.sidebar !== "collapsed" || !draggingFiles(e)) return;
+    e.preventDefault();   // sonst lehnt der Zeiger die Ablage ab, bevor .drop sichtbar ist
+    setSidebar(false);
+  });
+}
+
 /* ---------- loading ---------- */
 $("pick").onchange = e => addFiles(e.target.files);
 const drop = $("drop");
@@ -276,6 +346,7 @@ function renderFiles() {
 function updateButtons() {
   const chosen = docs.filter(d => d.selected).length, allOn = docs.length > 0 && chosen === docs.length;
   $("docCount").textContent = docs.length ? `${chosen} von ${docs.length} ausgewählt` : "";
+  $("railCount").textContent = docs.length ? `${chosen}` : "";
   $("build").disabled = !chosen;
   $("all").disabled = !docs.length;
   $("all").textContent = allOn ? "Keine" : "Alle";
