@@ -1,6 +1,10 @@
-/* Gemeinsame Grundlage für index.html und form.html: Farben, Formularfelder,
-   Schaltflächen, Statuszeile. Alles Seitenspezifische (Raster, Seitenleiste,
-   Panels, Ergebnisliste, Kachel) bleibt in der jeweiligen Seite.
+/* Gemeinsame Grundlage für index.html, form.html und history.html: Farben,
+   Formularfelder, Schaltflächen, Statuszeile — dazu alles, was mehr als eine
+   Seite braucht: die Dokumentliste und das Aufklappmenü. Beide stehen hier,
+   seit das Historie-Fenster dieselben Zeilen zeigt wie die Ergebnisliste;
+   in zwei Fassungen liefen sie auseinander.
+   Seitenspezifisches (Raster, Seitenleiste, Panels, Kachel) bleibt in der
+   jeweiligen Seite.
 
    In beiden Seiten muss <link rel="stylesheet" href="app.css"> VOR dem eigenen
    <style>-Block stehen, damit die Seitenregeln weiterhin gewinnen. */
@@ -55,3 +59,87 @@ button[aria-busy=true] { cursor:progress }
 
 /* ---- status line ---- */
 #status { color:var(--muted); min-height:1.45em } #status.error { color:var(--danger) }
+
+/* ---- Schaltfläche, die wie ein Link aussieht ----
+   Es gibt im Projekt bewusst kein <a>: ein Anker würde im Webview navigieren. */
+button.link { background:none; border:0; padding:0; color:var(--accent); cursor:pointer }
+button.link:hover:not(:disabled) { background:none; text-decoration:underline }
+button.link:disabled { opacity:.4; cursor:default }
+
+/* ---- Dokumentliste ----
+   Von der Ergebnisliste in index.html und vom Historie-Fenster benutzt, deshalb
+   hier und nicht in einer Seite. Die Zeilen ragen mit margin:0 -6px absichtlich
+   über den Textbereich hinaus, damit die Hervorhebung bis an den Rand reicht;
+   der umgebende Kasten muss dieselben 6px als padding-inline zurückgeben. */
+.empty { color:var(--muted); display:flex; flex-direction:column; align-items:center; justify-content:center;
+         text-align:center; gap:3px; height:100%; min-height:72px; padding:12px; max-width:44ch; margin:0 auto }
+.empty b { color:var(--ink); font-weight:600 }
+.results { display:flex; flex-direction:column }
+.result { display:flex; align-items:center; gap:6px; padding:5px 6px; margin:0 -6px; border-radius:var(--r-sm);
+          transition:background var(--dur) var(--ease); animation:rowIn 200ms var(--ease) both }
+.result:hover { background:var(--raised) }
+.result + .result { box-shadow:0 -1px 0 var(--line) }
+.result .name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+.result .size { color:var(--muted); font-variant-numeric:tabular-nums; flex:none }
+.result .x { display:grid; place-items:center; width:26px; height:26px; flex:none; padding:0; font-size:12px;
+             background:none; border:0; border-radius:var(--r-sm); color:var(--muted); cursor:pointer;
+             transition:color var(--dur) var(--ease), background var(--dur) var(--ease) }
+.result .x:hover { color:var(--danger); background:rgba(239,125,115,.12) }
+@keyframes rowIn { from { opacity:0; transform:translateY(-3px) } to { opacity:1; transform:none } }
+
+/* ---- Historie: je Ausfüll-Vorgang ein Abschnitt ----
+   Jeder Lauf ist ein eigener Block auf hellerem Grund. Ohne diese Fläche
+   verschwimmen bei mehreren Läufen alle Zeilen zu einer einzigen langen Liste,
+   und man sieht nicht mehr, was zusammengehört. */
+.history { display:flex; flex-direction:column; gap:10px }
+.run { background:var(--surface); border:1px solid var(--line); border-radius:var(--r);
+       padding-bottom:5px }
+/* Die einzige Linie im Fenster ist der Rahmen dieses Blocks. Ein Strich unter
+   der Überschrift und Trenner zwischen den Zeilen hatten dieselbe Farbe und
+   Stärke — drei gleich laute Linien, von denen keine mehr etwas gliederte.
+   Die Überschrift setzt sich jetzt über die Fläche ab, nicht über eine Kante.
+   Sie bleibt beim Scrollen oben stehen, sonst weiß man mitten in einem langen
+   Lauf nicht mehr, zu welchem Formular die Zeilen gehören. Kein overflow:hidden
+   am Block: das machte den nächsten Scroll-Vorfahren kaputt und position:sticky
+   damit wirkungslos. */
+.run h3 { position:sticky; top:0; z-index:1; background:var(--raised);
+          border-radius:calc(var(--r) - 1px) calc(var(--r) - 1px) 0 0;
+          font-size:13px; font-weight:400; margin:0 0 4px; display:flex; align-items:baseline; gap:8px;
+          padding:8px 12px }
+.run .result { margin:0; padding-inline:12px }
+.run .result + .result { box-shadow:none }
+.run h3 .at { color:var(--muted); font-variant-numeric:tabular-nums; flex:none }
+.run h3 .who { font-weight:600; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+.run h3 .meta { margin-left:auto; color:var(--muted); flex:none }
+/* In der Historie stehen viele Zeilen untereinander; eine umrandete
+   Schaltfläche je Zeile ergäbe eine Wand aus Kästchen am rechten Rand. Sie
+   tritt deshalb zurück, bis die Zeile berührt wird oder das Menü offen steht.
+   Die Beschriftung bleibt sichtbar — nur der Rahmen verschwindet. */
+.run .menu-btn { background:none; border-color:transparent; color:var(--muted) }
+.run .result:hover .menu-btn, .run .menu-btn:focus-visible {
+  background:var(--sunk); border-color:var(--field-line); color:var(--ink) }
+.run .menu-btn[aria-expanded=true] {
+  background:var(--sunk); border-color:var(--accent); color:var(--ink) }
+
+/* ---- Aufklappmenü ----
+   Hängt in jeder Seite direkt am <body>: die Panels scrollen, innerhalb würde
+   das Menü abgeschnitten. Die Position wird per CSSOM gesetzt, ein
+   style-Attribut würde die CSP verwerfen. */
+.menu { position:fixed; z-index:10; min-width:172px; display:flex; flex-direction:column; padding:4px;
+        background:var(--surface); border:1px solid var(--line); border-radius:var(--r);
+        box-shadow:0 10px 28px rgba(0,0,0,.5) }
+.menu[hidden] { display:none }
+.menu button { background:none; border:0; border-radius:var(--r-sm); padding:6px 10px; text-align:left;
+               color:var(--ink); font:inherit; cursor:pointer; white-space:nowrap }
+.menu button:hover:not(:disabled), .menu button:focus-visible { background:var(--raised) }
+.menu button.danger { color:var(--danger) }
+.menu button.danger:hover:not(:disabled), .menu button.danger:focus-visible { background:rgba(239,125,115,.12) }
+.menu button:disabled { opacity:.4; cursor:default; background:none }
+/* Aktionen der Zeile: die Schaltfläche, die das Menü aufklappt. Solange es offen
+   steht, bleibt sie eingedrückt und der Pfeil zeigt nach oben — sonst wäre bei
+   mehreren Zeilen nicht zu sehen, welche gemeint ist. */
+.menu-btn { flex:none; display:inline-flex; align-items:center; gap:5px }
+.menu-btn .caret { font-size:9px; line-height:1; color:var(--muted);
+                   transition:transform var(--dur) var(--ease) }
+.menu-btn[aria-expanded=true] { background:var(--sunk); border-color:var(--accent) }
+.menu-btn[aria-expanded=true] .caret { transform:rotate(180deg) }

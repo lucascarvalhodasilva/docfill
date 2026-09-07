@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Historie</title>
+<link rel="stylesheet" href="app.css">
+<style>
+  /* Ein einspaltiges Fenster: Kopfzeile, scrollende Liste, Fußzeile. */
+  body { display:flex; flex-direction:column; padding:14px; gap:10px; overflow:hidden }
+  h2 { font-size:12px; font-weight:600; margin:0; display:flex; align-items:baseline; gap:6px;
+       padding-bottom:9px; border-bottom:1px solid var(--line) }
+  h2 .meta { font-weight:400; color:var(--muted) }
+  /* Den negativen Rand der Zeilen fängt der Block des Laufs ab (siehe app.css);
+     die 2px hier sind nur Luft, damit Fokusrahmen nicht abgeschnitten werden. */
+  #list { overflow-y:auto; flex:1; min-height:0; width:100%; max-width:640px; margin:0 auto;
+          padding:2px }
+  footer { padding-top:9px; border-top:1px solid var(--line) }
+</style>
+</head>
+<body>
+<h2>Historie<span class="meta" id="meta"></span></h2>
+<div id="list"></div>
+<footer><div class="row"><span id="status" role="status" aria-live="polite"></span></div></footer>
+
+<!-- muss am <body> hängen: #list scrollt, innerhalb würde das Menü abgeschnitten -->
+<div id="rowMenu" class="menu" role="menu" aria-label="Ausgefülltes Dokument" hidden>
+  <button type="button" role="menuitem" data-a="open">Öffnen</button>
+  <button type="button" role="menuitem" data-a="save">Speichern</button>
+  <button type="button" role="menuitem" data-a="print">Drucken</button>
+</div>
+
+<script type="module">
+// Dieses Fenster kennt die Dokumente nicht: es bekommt Namen, Größen und
+// Zeiten und schickt für Öffnen, Speichern und Drucken nur einen Verweis
+// zurück. Ausgeführt wird das im Hauptfenster, wo die Inhalte liegen.
+//
+// Bewusst nur `invoke`, kein `listen`: capabilities/default.json deckt allein
+// das Fenster "main" ab, `plugin:event|listen` schlüge hier fehl. Aktualisiert
+// wird deshalb bei `focus` — wer im Hauptfenster nachfüllt und zurückwechselt,
+// sieht den neuen Stand.
+import { invoke } from "./vendor/tauri-api.js";
+import { defineMenu, openMenu, closeMenu, menuOpenFor } from "./menu-ui.js";
+import { renderHistory } from "./history-ui.js";
+
+const $ = id => document.getElementById(id);
+function setStatus(m, err) { const s = $("status"); s.textContent = m; s.className = err ? "error" : ""; }
+
+let runs = [];
+
+// `current` hält, welche Zeile aufgeklappt ist. Als `arg` geht die Schaltfläche
+// selbst mit: ein frisch gebautes { run, doc } wäre bei jedem Klick ein neues
+// Objekt und der Umschalt-Vergleich träfe nie zu.
+let current = null;
+
+const menu = defineMenu($("rowMenu"), action => {
+  if (!current) return;
+  invoke("history_action", { payload: JSON.stringify({ ...current, action }) })
+    .then(() => setStatus("An das Hauptfenster übergeben."))
+    .catch(e => setStatus(String(e), true));
+});
+
+function onMenu(btn, run, doc) {
+  if (menuOpenFor(btn)) { closeMenu(true); return; }
+  current = { run, doc };
+  const b = btn.getBoundingClientRect();
+  openMenu(menu, b.right, b.bottom + 4, { arg: btn, right: true, trigger: () =>
+    $("list").querySelector(`.menu-btn[data-run="${run}"][data-doc="${doc}"]`) });
+}
+
+async function load() {
+  let data;
+  try { data = JSON.parse(await invoke("history_payload")); }
+  catch { setStatus("Die Historie konnte nicht geladen werden.", true); return; }
+  runs = Array.isArray(data) ? data : [];
+  const n = runs.reduce((m, r) => m + r.docs.length, 0);
+  $("meta").textContent = n ? `${n} Dokument${n === 1 ? "" : "e"} in dieser Sitzung` : "";
+  renderHistory($("list"), runs, onMenu);
+}
+
+addEventListener("focus", () => { closeMenu(false); load(); });
+load();
+</script>
+</body>
+</html>

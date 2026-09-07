@@ -29,6 +29,18 @@ struct FormBridge {
     shown: Mutex<Option<String>>,
 }
 
+/// What the session filled so far, as opaque JSON — names, sizes and times, no
+/// document bytes. Same passthrough as `FormBridge`: the history window cannot
+/// read the main window's memory, so the metadata travels through here and Rust
+/// never looks inside it.
+///
+/// Nothing of this reaches the disk. It lives for as long as the process does,
+/// which is what "the history is gone when the app closes" rests on.
+#[derive(Default)]
+struct HistoryBridge {
+    payload: Mutex<Option<String>>,
+}
+
 /// A group as it sits on disk: the folder name and the meta JSON, handed back
 /// unread. Rust stores the frontend's JSON, it does not interpret it.
 #[derive(serde::Serialize)]
@@ -36,6 +48,10 @@ struct StoredGroup {
     id: String,
     meta: String,
 }
+
+/// Label of the history window. Fixed, unlike the per-group form windows: there
+/// is only ever one history.
+const HISTORY_LABEL: &str = "history";
 
 const MAX_DOC: usize = 25 * 1024 * 1024; // wie MAX_FILE in der Oberfläche
 const MAX_GROUP: usize = 200 * 1024 * 1024;
@@ -319,6 +335,73 @@ async fn form_submit(
 ) -> Result<(), String> {
     *bridge.payload.lock().map_err(|_| "Interner Fehler".to_string())? = Some(payload.clone());
     app.emit_to("main", "docfill://fill", payload)
+        .map_err(|_| "Das Hauptfenster antwortet nicht.".to_string())
+}
+
+/// The main window hands over the current session history, metadata only.
+/// Called after every fill run, so an open history window finds the new state
+/// the next time it asks.
+#[tauri::command]
+async fn history_publish(
+    bridge: tauri::State<'_, HistoryBridge>,
+    payload: String,
+) -> Result<(), String> {
+    *bridge
+        .payload
+        .lock()
+        .map_err(|_| "Interner Fehler".to_string())? = Some(payload);
+    Ok(())
+}
+
+/// Show the history window, building it the first time.
+#[tauri::command]
+async fn open_history_window(
+    app: tauri::AppHandle,
+    bridge: tauri::State<'_, HistoryBridge>,
+    payload: String,
+) -> Result<(), String> {
+    let failed = || "Das Historie-Fenster konnte nicht geöffnet werden.".to_string();
+    *bridge
+        .payload
+        .lock()
+        .map_err(|_| "Interner Fehler".to_string())? = Some(payload);
+
+    // Anders als beim Formular genügt hier ein Fenster: es liest seine Nutzlast
+    // bei jedem `focus` neu und zeigt deshalb nie einen veralteten Stand.
+    if let Some(w) = app.get_webview_window(HISTORY_LABEL) {
+        let _ = w.unminimize();
+        return w.set_focus().map_err(|_| failed());
+    }
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        HISTORY_LABEL,
+        tauri::WebviewUrl::App("history.html".into()),
+    )
+    .title("Historie")
+    .inner_size(620.0, 700.0)
+    .min_inner_size(420.0, 360.0)
+    .build()
+    .map(|_| ())
+    .map_err(|_| failed())
+}
+
+/// The history window asks for what it should display.
+#[tauri::command]
+async fn history_payload(bridge: tauri::State<'_, HistoryBridge>) -> Result<String, String> {
+    Ok(bridge
+        .payload
+        .lock()
+        .map_err(|_| "Interner Fehler".to_string())?
+        .clone()
+        .unwrap_or_else(|| "[]".into()))
+}
+
+/// "Öffnen"/"Speichern"/"Drucken" in the history window: the window only knows
+/// which row was picked, so the request goes to the main window, which holds
+/// the documents and does the work.
+#[tauri::command]
+async fn history_action(app: tauri::AppHandle, payload: String) -> Result<(), String> {
+    app.emit_to("main", "docfill://history-action", payload)
         .map_err(|_| "Das Hauptfenster antwortet nicht.".to_string())
 }
 
@@ -626,6 +709,26 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(SaveTarget::default())
         .manage(FormBridge::default())
+        .manage(HistoryBridge::default())
+        // Schließt jemand das Hauptfenster, während ein Formular- oder das
+        // Historie-Fenster noch offen steht, liefe der Prozess weiter: das
+        // Exit-Ereignis bliebe aus, der Staging-Ordner läge weiter im Temp und
+        // die Historie wäre nicht wirklich weg. Also gehen sie mit.
+        .setup(|app| {
+            if let Some(main) = app.get_webview_window("main") {
+                let handle = app.handle().clone();
+                main.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Destroyed = event {
+                        for w in handle.webview_windows().values() {
+                            if w.label() != "main" {
+                                let _ = w.close();
+                            }
+                        }
+                    }
+                });
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             open_document,
             print_document,
@@ -638,6 +741,10 @@ pub fn run() {
             form_cache_values,
             form_submit,
             close_form_window,
+            history_publish,
+            open_history_window,
+            history_payload,
+            history_action,
             group_save_meta,
             group_save_doc,
             group_list,

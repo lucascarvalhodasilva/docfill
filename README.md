@@ -22,10 +22,13 @@ npm run build                    # Installationspakete in src-tauri/target/relea
 ## Aufbau
 - `src/index.html` — die gesamte Oberfläche (auf Deutsch). Läuft auch in einem normalen Browser; innerhalb von Tauri werden stattdessen native Dialoge, Dateizugriffe, „mit Word öffnen“ und das Drucken im Hintergrund verwendet.
 - `src/form.html` — das Formularfenster: ein zweites, echtes Fenster, das über die Kachel im Hauptfenster geöffnet wird. Es zeigt nur Felder an und schickt die Werte zurück; die Dokumente bleiben im Hauptfenster.
-- `src/app.css` — Farben, Formularfelder, Schaltflächen und Statuszeile, von beiden Seiten benutzt. Muss in beiden Seiten **vor** dem eigenen `<style>` eingebunden werden.
-- `src/form-ui.js` — `renderFields` und `collectValues`, ebenfalls von beiden Seiten benutzt, damit die Darstellung nicht auseinanderläuft.
+- `src/history.html` — das Historie-Fenster: zeigt, was in dieser Sitzung ausgefüllt wurde, nach Ausfüll-Vorgang gegliedert. Es kennt nur Namen, Größen und Zeiten; Öffnen, Speichern und Drucken führt das Hauptfenster aus.
+- `src/app.css` — Farben, Formularfelder, Schaltflächen, Statuszeile sowie Dokumentliste und Aufklappmenü, von allen drei Seiten benutzt. Muss in jeder Seite **vor** dem eigenen `<style>` eingebunden werden.
+- `src/form-ui.js` — `renderFields` und `collectValues`, von Formularfenster und Ersatzdialog benutzt, damit die Darstellung nicht auseinanderläuft.
+- `src/history-ui.js` — `renderHistory` und `size`, von Historie-Fenster und Ersatzdialog benutzt.
+- `src/menu-ui.js` — die Aufklappmenüs (Kachel-Kontextmenü, Aktionen der Dokumentzeile). Das Menü-Element bleibt in der Seite, weil es dort am `<body>` hängen muss; die Mechanik steht hier.
 - `src/vendor/` — mitgelieferte Bibliotheken, siehe unten.
-- `src-tauri/src/lib.rs` — elf Befehle. Zum Speichern und Öffnen: `open_document`, `print_document`, `save_document`, `save_all_begin`, `save_all_write`, `save_all_finish`. Sie nehmen Inhalt und Wunschnamen entgegen, nie einen Zielpfad. Für das Formularfenster: `open_form_window`, `form_payload`, `form_cache_values`, `form_submit`, `close_form_window`.
+- `src-tauri/src/lib.rs` — 21 Befehle. Zum Speichern und Öffnen: `open_document`, `print_document`, `save_document`, `save_all_begin`, `save_all_write`, `save_all_finish`, `list_printers`. Sie nehmen Inhalt und Wunschnamen entgegen, nie einen Zielpfad. Für das Formularfenster: `open_form_window`, `form_payload`, `form_cache_values`, `form_submit`, `close_form_window`. Für die Historie: `history_publish`, `open_history_window`, `history_payload`, `history_action`. Für die gemerkten Formulare: `group_save_meta`, `group_save_doc`, `group_list`, `group_read_doc`, `group_delete`.
 - `src-tauri/capabilities/default.json` — nur `core:default`; die Oberfläche hat keinen Zugriff auf Dateisystem, Dialoge oder Shell.
 
 ## Wie ein Feld in mehreren Dokumenten wiedererkannt wird
@@ -95,8 +98,15 @@ Tauri-API dazu, dort exportieren und den Befehl erneut ausführen.
 - Das Formularfenster wird in Rust erzeugt, nicht im JavaScript. Damit bleibt es dabei, dass
   die Oberfläche keine Adresse nennen kann; die Berechtigung
   `core:webview:allow-create-webview-window` wird nicht vergeben.
-- Zwischen den beiden Fenstern gehen nur Feldbeschreibungen und eingegebene Werte hin und her,
-  niemals Dokumentinhalte. Die bleiben im Hauptfenster.
+- Zwischen den Fenstern gehen nur Feldbeschreibungen, eingegebene Werte und — für die Historie —
+  Namen, Größen und Zeiten hin und her, niemals Dokumentinhalte. Die bleiben im Hauptfenster.
+  Auch „Öffnen“, „Speichern“ und „Drucken“ aus der Historie werden dort ausgeführt; das
+  Historie-Fenster schickt nur, welche Zeile gemeint war.
+- Die Historie liegt ausschließlich im Arbeitsspeicher und ist mit dem Programm weg; auf die
+  Platte kommt nichts. Damit das auch dann greift, wenn zuerst das Hauptfenster geschlossen wird,
+  gehen die Nebenfenster mit ihm zu — sonst liefe der Prozess weiter und der Ablageordner bliebe
+  liegen. Über einen langen Arbeitstag verwirft sie die ältesten Läufe, sobald sie 200 MB
+  überschreitet.
 - Die Oberfläche kennt keine Zielpfade. Sie übergibt Inhalt und Wunschnamen; wohin
   gespeichert wird, entscheidet ein nativer Dialog innerhalb von Rust. Dateinamen werden
   dabei so bereinigt, dass sie den gewählten Ordner nicht verlassen können.

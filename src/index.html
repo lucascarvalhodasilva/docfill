@@ -81,21 +81,6 @@
   #form .tile:hover:not(:disabled) .glyph { border-color:var(--accent); transform:translateY(-2px) }
   #form .tile:disabled { opacity:.4; cursor:default }
 
-  /* ---- Kontextmenü ----
-     Hängt direkt am <body>: main hat overflow:hidden und #form overflow:auto,
-     innerhalb des Panels würde das Menü abgeschnitten. Position wird per CSSOM
-     gesetzt, ein style-Attribut würde die CSP verwerfen. */
-  .menu { position:fixed; z-index:10; min-width:172px; display:flex; flex-direction:column; padding:4px;
-          background:var(--surface); border:1px solid var(--line); border-radius:var(--r);
-          box-shadow:0 10px 28px rgba(0,0,0,.5) }
-  .menu[hidden] { display:none }
-  .menu button { background:none; border:0; border-radius:var(--r-sm); padding:6px 10px; text-align:left;
-                 color:var(--ink); font:inherit; cursor:pointer; white-space:nowrap }
-  .menu button:hover:not(:disabled), .menu button:focus-visible { background:var(--raised) }
-  .menu button.danger { color:var(--danger) }
-  .menu button.danger:hover:not(:disabled), .menu button.danger:focus-visible { background:rgba(239,125,115,.12) }
-  .menu button:disabled { opacity:.4; cursor:default; background:none }
-
   /* ---- kleiner Dialog (Umbenennen, Nachfrage) ----
      fit-content, nicht auto: ein modaler Dialog bekommt vom Browser
      inset:0 und margin:auto. Damit sind oben und unten festgelegt, und
@@ -107,30 +92,11 @@
 
   /* ---- Ersatzdialog ohne Tauri ---- */
   #dlgForm { flex:1; overflow-y:auto; padding:12px }
+  #dlgHistory { flex:1; overflow-y:auto; padding:12px }
 
-  /* ---- results ---- */
-  .empty { color:var(--muted); display:flex; flex-direction:column; align-items:center; justify-content:center;
-           text-align:center; gap:3px; height:100%; min-height:72px; padding:12px; max-width:44ch; margin:0 auto }
-  .empty b { color:var(--ink); font-weight:600 }
-  .results { display:flex; flex-direction:column }
-  .result { display:flex; align-items:center; gap:6px; padding:5px 6px; margin:0 -6px; border-radius:var(--r-sm);
-            transition:background var(--dur) var(--ease); animation:rowIn 200ms var(--ease) both }
-  .result:hover { background:var(--raised) }
-  .result + .result { box-shadow:0 -1px 0 var(--line) }
-  .result .name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
-  .result .size { color:var(--muted); font-variant-numeric:tabular-nums; flex:none }
-  /* Zusammenhängende Schaltflächen: die Ränder der Nachbarn fallen zusammen,
-     beim Überfahren kommt die betonte Umrandung nach vorn. */
-  .btn-group { display:inline-flex; flex:none }
-  .btn-group button { border-radius:0; margin-left:-1px }
-  .btn-group button:first-child { border-radius:var(--r-sm) 0 0 var(--r-sm); margin-left:0 }
-  .btn-group button:last-child { border-radius:0 var(--r-sm) var(--r-sm) 0 }
-  .btn-group button:hover:not(:disabled), .btn-group button:focus-visible { position:relative; z-index:1 }
-  .result .x { display:grid; place-items:center; width:26px; height:26px; flex:none; padding:0; font-size:12px;
-               background:none; border:0; border-radius:var(--r-sm); color:var(--muted); cursor:pointer;
-               transition:color var(--dur) var(--ease), background var(--dur) var(--ease) }
-  .result .x:hover { color:var(--danger); background:rgba(239,125,115,.12) }
-  @keyframes rowIn { from { opacity:0; transform:translateY(-3px) } to { opacity:1; transform:none } }
+  /* Ergebnisliste, Aufklappmenü und der Link in der Kopfzeile stehen in app.css:
+     das Historie-Fenster zeigt dieselben Zeilen. */
+  #openHistory { margin-left:auto }
 
   /* ---- preview dialog (browser fallback only) ---- */
   dialog { width:min(860px,94vw); height:90vh; border:1px solid var(--line); border-radius:var(--r); padding:0;
@@ -171,7 +137,9 @@
     <div class="row"><span id="status" role="status" aria-live="polite"></span></div>
   </section>
   <section class="panel">
-    <h2>Ausgefüllte Dokumente<span class="meta" id="resultCount"></span></h2>
+    <h2>Ausgefüllte Dokumente<span class="meta" id="resultCount"></span>
+      <button id="openHistory" class="link" disabled
+        title="Alles, was in dieser Sitzung ausgefüllt wurde">Historie</button></h2>
     <div id="results"><div class="empty"><b>Noch nichts ausgefüllt</b>Ausgefüllte Kopien bleiben hier, bis das
       Programm beendet wird; die Originale werden nie verändert.</div></div>
     <div class="row"><button id="saveAll" disabled>Alle speichern…</button><span class="spacer"></span>
@@ -189,6 +157,14 @@
   <button type="button" role="menuitem" data-a="refresh">Aktualisieren</button>
   <button type="button" role="menuitem" data-a="fav">Als Favorit merken</button>
   <button type="button" role="menuitem" data-a="delete" class="danger">Löschen</button>
+</div>
+
+<!-- Aktionsmenü der Ergebniszeile; ebenfalls am <body>, weil #results scrollt.
+     Bedient auch die Zeilen im Ersatzdialog der Historie. -->
+<div id="resultMenu" class="menu" role="menu" aria-label="Ausgefülltes Dokument" hidden>
+  <button type="button" role="menuitem" data-a="open">Öffnen</button>
+  <button type="button" role="menuitem" data-a="save">Speichern</button>
+  <button type="button" role="menuitem" data-a="print">Drucken</button>
 </div>
 
 <dialog id="renameDlg" class="small">
@@ -215,6 +191,13 @@
   <div class="bar foot"><button id="confirmCancel">Abbrechen</button><button id="confirmOk" class="primary">Löschen</button></div>
 </dialog>
 
+<!-- Ersatz für das Historie-Fenster ohne Tauri, wie formDlg für das Formular -->
+<dialog id="historyDlg">
+  <div class="bar"><b>Historie</b><span id="dlgHistoryMeta" class="meta"></span>
+    <button id="historyDlgClose">Schließen</button></div>
+  <div id="dlgHistory"></div>
+</dialog>
+
 <!-- Ersatz für das zweite Fenster, wenn die Oberfläche ohne Tauri im Browser läuft -->
 <dialog id="formDlg">
   <div class="bar"><b>Formular</b><span id="dlgFormMeta" class="meta"></span><button id="formDlgClose">Schließen</button></div>
@@ -228,6 +211,8 @@
 // no handle on the IPC bridge or the filesystem API.
 import { invoke, listen } from "./vendor/tauri-api.js";
 import { renderFields, collectValues, esc } from "./form-ui.js";
+import { defineMenu, openMenu, closeMenu, menuOpenFor } from "./menu-ui.js";
+import { renderHistory, size } from "./history-ui.js";
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const W14 = "http://schemas.microsoft.com/office/word/2010/wordml";
 const $ = id => document.getElementById(id);
@@ -238,6 +223,13 @@ const MAX_PART = 40 * 1024 * 1024;   // guards against a zip bomb in document.xm
 
 let docs = [];      // { name, buffer, selected }
 let results = [];   // { name, blob } — immer die zuletzt ausgefüllten
+// Die Historie sammelt alle Läufe der Sitzung: { id, at, group, docs:[{name,blob}] }.
+// Sie hängt nicht an `results` — das wird bei jedem Ausfüllen geleert und von
+// „Alle löschen“ zusätzlich gelichtet. Nur im Speicher, nichts davon geht auf
+// die Platte; mit dem Programm ist sie weg.
+let history = [];
+let historySeq = 0;
+const MAX_HISTORY = 200 * 1024 * 1024;   // wie MAX_GROUP in lib.rs
 // Jede Gruppe ist ein eigenes Formular:
 // { id, name, favorite, docs:[{name,buffer}], fields, values, loaded }
 let groups = [];
@@ -451,12 +443,12 @@ function renderTiles() {
     b.onclick = () => openForm(g.id);
     // ohne preventDefault käme zusätzlich das Menü von WebView2; stopPropagation
     // verhindert, dass der Schließen-Handler am Fenster gleich wieder zumacht
-    b.oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); openMenu(e.clientX, e.clientY, g.id); };
+    b.oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); openTileMenu(e.clientX, e.clientY, g.id); };
     b.onkeydown = e => {
       if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
         e.preventDefault();
         const r = b.getBoundingClientRect();
-        openMenu(r.left + 12, r.bottom - 8, g.id);
+        openTileMenu(r.left + 12, r.bottom - 8, g.id);
       }
     };
     wrap.appendChild(b);
@@ -464,55 +456,40 @@ function renderTiles() {
   form.appendChild(wrap);
 }
 
-/* ---------- Kontextmenü der Kachel ---------- */
-const menu = $("tileMenu");
-const menuOpen = () => !menu.hidden;
-let menuTarget = null;   // Kachel, auf die geklickt wurde
-
-function openMenu(x, y, id) {
-  menuTarget = id;
-  const g = groupById(id);
-  menu.querySelector("[data-a=fav]").textContent =
-    g && g.favorite ? "Favorit aufheben" : "Als Favorit merken";
-  menu.hidden = false;
-  // erst einblenden, dann messen und am Bildschirmrand umklappen
-  const w = menu.offsetWidth, h = menu.offsetHeight;
-  menu.style.left = Math.max(4, Math.min(x, innerWidth - w - 4)) + "px";
-  menu.style.top = Math.max(4, Math.min(y, innerHeight - h - 4)) + "px";
-  const first = menu.querySelector("button:not(:disabled)");
-  if (first) first.focus();
-}
-function closeMenu(toTile) {
-  if (menu.hidden) return;
-  menu.hidden = true;
-  if (toTile && menuTarget) {
-    const t = $("form").querySelector(`.tile[data-id="${menuTarget}"]`);
-    if (t) t.focus();
-  }
-}
-menu.onclick = e => {
-  const b = e.target.closest("button[data-a]");
-  if (!b || b.disabled) return;
-  const id = menuTarget;
-  closeMenu(false);
-  if (b.dataset.a === "rename") renameForm(id);
-  else if (b.dataset.a === "refresh") refreshGroup(id);
-  else if (b.dataset.a === "fav") toggleFavorite(id);
-  else if (b.dataset.a === "delete") deleteForm(id);
-};
-addEventListener("keydown", e => {
-  if (!menuOpen()) return;
-  if (e.key === "Escape") { e.preventDefault(); closeMenu(true); return; }
-  if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-  e.preventDefault();
-  const items = [...menu.querySelectorAll("button:not(:disabled)")];
-  const i = items.indexOf(document.activeElement);
-  items[e.key === "ArrowDown" ? (i + 1) % items.length : (i - 1 + items.length) % items.length].focus();
+/* ---------- Kontextmenü der Kachel ----------
+   Die Mechanik der Aufklappmenüs steht in menu-ui.js: das Historie-Fenster
+   benutzt sie ebenfalls. */
+const tileMenu = defineMenu($("tileMenu"), (a, id) => {
+  if (a === "rename") renameForm(id);
+  else if (a === "refresh") refreshGroup(id);
+  else if (a === "fav") toggleFavorite(id);
+  else if (a === "delete") deleteForm(id);
 });
-addEventListener("mousedown", e => { if (!menu.contains(e.target)) closeMenu(false); });
-addEventListener("contextmenu", e => { if (!menu.contains(e.target)) closeMenu(false); });
-addEventListener("blur", () => closeMenu(false));
-addEventListener("resize", () => closeMenu(false));
+function openTileMenu(x, y, id) {
+  const g = groupById(id);
+  tileMenu.el.querySelector("[data-a=fav]").textContent =
+    g && g.favorite ? "Favorit aufheben" : "Als Favorit merken";
+  openMenu(tileMenu, x, y,
+    { arg: id, trigger: () => $("form").querySelector(`.tile[data-id="${id}"]`) });
+}
+
+/* ---------- Aktionsmenü der Dokumentzeile ----------
+   Bedient die Ergebnisliste und — ohne Tauri — auch die Zeilen im
+   Historie-Dialog. Beide reichen dasselbe { name, blob } herein, deshalb
+   genügt ein Menü. */
+const resultMenu = defineMenu($("resultMenu"), (a, r) => {
+  if (a === "open") openPreview(r);
+  else if (a === "save") save(r);
+  else if (a === "print") print(r);
+});
+// `find` liefert die auslösende Schaltfläche neu, falls die Liste inzwischen
+// neu gezeichnet wurde.
+function openResultMenu(btn, r, find) {
+  // zweiter Klick auf dieselbe Schaltfläche klappt wieder zu
+  if (menuOpenFor(r)) { closeMenu(true); return; }
+  const b = btn.getBoundingClientRect();
+  openMenu(resultMenu, b.right, b.bottom + 4, { arg: r, right: true, trigger: find });
+}
 
 /* ---------- Speichern der Favoriten ---------- */
 // meta.json trägt Name, Felder und Antworten — nie Dokumentinhalte. Die gehen
@@ -693,9 +670,55 @@ async function runFill(id, entered) {
       const blob = await fillDoc(d, values);
       results.push({ name: d.name.replace(/\.docx$/i, "") + "_ausgefuellt.docx", blob });
     }
+    if (results.length) addHistoryRun(g.name, results);
     renderResults(); setStatus(`${results.length} Dokument${results.length === 1 ? "" : "e"} ausgefüllt.`);
   } catch (e) { setStatus("Ein Dokument konnte nicht ausgefüllt werden: " + e.message, true); }
 }
+
+/* ---------- Historie der Sitzung ---------- */
+// Die Dokumente werden mit demselben { name, blob } aufgenommen, das auch in
+// `results` steht: openPreview/save/print arbeiten dadurch unverändert weiter.
+function addHistoryRun(group, docs) {
+  history.push({ id: String(++historySeq), at: Date.now(), group, docs: docs.slice() });
+  // Ältestes verwerfen, bis die Sitzung wieder unter der Grenze liegt — sonst
+  // wächst der Speicher über einen langen Arbeitstag unbegrenzt.
+  let total = history.reduce((n, r) => n + r.docs.reduce((m, d) => m + d.blob.size, 0), 0);
+  while (history.length > 1 && total > MAX_HISTORY) {
+    total -= history.shift().docs.reduce((m, d) => m + d.blob.size, 0);
+  }
+  publishHistory();
+}
+// Nur Metadaten — die Blobs bleiben in diesem Fenster.
+const historyMeta = () => JSON.stringify(history.map(r => ({
+  id: r.id, at: r.at, group: r.group,
+  docs: r.docs.map(d => ({ name: d.name, size: d.blob.size }))
+})));
+function historyDoc(runId, i) {
+  const run = history.find(r => r.id === String(runId));
+  return run && run.docs[i];
+}
+function publishHistory() {
+  $("openHistory").disabled = !history.length;
+  if (native) invoke("history_publish", { payload: historyMeta() }).catch(() => {});
+}
+$("openHistory").onclick = async () => {
+  if (!history.length) return;
+  if (native) {
+    try { await invoke("open_history_window", { payload: historyMeta() }); }
+    catch (e) { setStatus(String(e), true); }
+    return;
+  }
+  // Ohne Tauri gibt es kein zweites Fenster — derselbe Inhalt als Dialog.
+  const n = history.reduce((m, r) => m + r.docs.length, 0);
+  $("dlgHistoryMeta").textContent = `${n} Dokument${n === 1 ? "" : "e"} in dieser Sitzung`;
+  renderHistory($("dlgHistory"), JSON.parse(historyMeta()), (btn, runId, i) => {
+    const d = historyDoc(runId, i);
+    if (d) openResultMenu(btn, d,
+      () => $("dlgHistory").querySelector(`.menu-btn[data-run="${runId}"][data-doc="${i}"]`));
+  });
+  $("historyDlg").showModal();
+};
+$("historyDlgClose").onclick = () => $("historyDlg").close();
 
 // Ausfüllen im Formularfenster: erst schließen, dann füllen — Fortschritt und
 // Ergebnisse gehören ins Hauptfenster, damit alles an einer Stelle steht.
@@ -715,6 +738,17 @@ if (native) {
     await invoke("close_form_window").catch(() => {});
     activeId = null;
     runFill(p.id, p.values || {});
+  });
+  // Öffnen/Speichern/Drucken aus dem Historie-Fenster: dort liegen nur
+  // Metadaten, ausgeführt wird es hier, wo die Dokumente sind.
+  listen("docfill://history-action", e => {
+    let p = {};
+    try { p = JSON.parse(e.payload); } catch { return; }
+    const d = historyDoc(p.run, p.doc);
+    if (!d) { setStatus("Das Dokument steht nicht mehr in der Historie.", true); return; }
+    if (p.action === "open") openPreview(d);
+    else if (p.action === "save") save(d);
+    else if (p.action === "print") print(d);
   });
 }
 
@@ -763,11 +797,11 @@ function renderResults() {
     const div = document.createElement("div"); div.className = "result";
     div.style.animationDelay = Math.min(i, 6) * 25 + "ms";
     div.innerHTML = `<span class="name" title="${esc(r.name)}">${esc(r.name)}</span><span class="size">${size(r.blob.size)}</span>
-      <span class="btn-group"><button data-a="open">Öffnen</button><button data-a="save">Speichern</button><button data-a="print">Drucken</button></span>
+      <button class="menu-btn" data-i="${i}" aria-haspopup="menu" aria-expanded="false" aria-controls="resultMenu"
+        aria-label="Aktionen für ${esc(r.name)}">Aktionen<span class="caret" aria-hidden="true">▾</span></button>
       <button class="x" data-a="del" title="Aus der Liste entfernen" aria-label="${esc(r.name)} aus der Liste entfernen">✕</button>`;
-    div.querySelector('[data-a=open]').onclick = () => openPreview(r);
-    div.querySelector('[data-a=save]').onclick = () => save(r);
-    div.querySelector('[data-a=print]').onclick = () => print(r);
+    const mb = div.querySelector(".menu-btn");
+    mb.onclick = () => openResultMenu(mb, r, () => $("results").querySelector(`.menu-btn[data-i="${i}"]`));
     div.querySelector('[data-a=del]').onclick = () => removeResult(r);
     box.appendChild(div);
   });
@@ -876,7 +910,7 @@ async function sendToPrinter(r, printer) {
 /* ---------- helpers ---------- */
 function setStatus(m, err) { const s = $("status"); s.textContent = m; s.className = err ? "error" : ""; }
 function busy(btn, on) { btn.disabled = on; btn.setAttribute("aria-busy", on); }
-function size(b) { return b < 1024 ? b + " B" : b < 1048576 ? Math.round(b / 1024) + " KB" : (b / 1048576).toFixed(1) + " MB"; }
+// size() steht in history-ui.js, weil das Historie-Fenster es auch braucht.
 // esc / toISO / fromISO stehen in form-ui.js, weil das Formularfenster sie auch braucht.
 </script>
 </body>
