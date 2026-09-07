@@ -782,6 +782,16 @@ fn wipe_staging() {
 mod tests {
     use super::*;
 
+    /// Serialisiert die Tests, die den Ablageordner anfassen: der Pfad ist ein
+    /// prozessweites `OnceLock`, und `wipe_staging` zieht den Ordner unter
+    /// allem weg, was im selben Moment eine Datei ablegt.
+    static STAGING: Mutex<()> = Mutex::new(());
+
+    /// Ein gescheiterter Test soll die übrigen nicht mitreißen.
+    fn staging_guard() -> std::sync::MutexGuard<'static, ()> {
+        STAGING.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn safe_neutralises_separators_and_quotes() {
         assert_eq!(safe(r"..\..\Windows\System32\evil.dll"), ".._.._Windows_System32_evil.dll");
@@ -793,6 +803,7 @@ mod tests {
 
     #[test]
     fn confine_accepts_only_staged_files() {
+        let _guard = staging_guard();
         let staged = stage("ok.docx", b"x").unwrap();
         assert!(confine(&staged).is_ok(), "a genuinely staged file must be usable");
 
@@ -827,6 +838,8 @@ mod tests {
     fn stage_does_not_follow_a_preplaced_symlink() {
         use std::os::unix::fs::{symlink, PermissionsExt};
 
+        let _guard = staging_guard();
+
         let victim = std::env::temp_dir().join("docfill-victim.txt");
         fs::write(&victim, b"ORIGINAL").unwrap();
 
@@ -852,5 +865,26 @@ mod tests {
         assert_eq!(dmode, 0o700, "staging folder is not owner-only: {dmode:o}");
 
         let _ = fs::remove_file(&victim);
+    }
+
+    /// Deckt den Aufräumschritt ab, den der Fenster-Handler beim Schließen
+    /// des Hauptfensters auslöst. Das Tauri-Ereignis selbst lässt sich hier
+    /// nicht nachstellen; geprüft wird der Teil, der die Zusage trägt: der
+    /// Ordner ist danach weg, und ein zweiter Aufruf — den es gibt, weil auch
+    /// `RunEvent::Exit` aufräumt — greift ins Leere, statt zu scheitern.
+    #[test]
+    fn wipe_staging_removes_the_folder_and_runs_twice() {
+        let _guard = staging_guard();
+        let dir = staging_dir();
+
+        let staged = stage("leftover.docx", b"personal data").unwrap();
+        assert!(staged.exists(), "nothing was staged, the test would prove nothing");
+
+        wipe_staging();
+        assert!(!dir.exists(), "staging folder survived cleanup: {}", dir.display());
+
+        // beide Wege nach draußen rufen wipe_staging; der zweite darf nicht stolpern
+        wipe_staging();
+        assert!(!dir.exists(), "second cleanup recreated the folder");
     }
 }
