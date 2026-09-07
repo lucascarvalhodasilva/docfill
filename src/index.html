@@ -23,7 +23,11 @@
           margin:14px 0 14px 14px; padding:14px; overflow:auto;
           display:flex; flex-direction:column; gap:10px }
   main { padding:14px; overflow:hidden; display:grid; gap:12px;
-         grid-template-columns:minmax(0,1fr); grid-template-rows:minmax(0,1fr) auto }
+         grid-template-columns:minmax(0,1fr);
+         /* Untergrenze für die Ergebnisse, sonst bleiben sie ein Streifen unter
+            dem Formular. An der Fensterhöhe gemessen, damit bei den 460px
+            Mindesthöhe aus tauri.conf.json oben noch Platz fürs Formular ist. */
+         grid-template-rows:minmax(0,1fr) minmax(min(250px,40vh),auto) }
 
   h2 { font-size:12px; font-weight:600; margin:0; display:flex; align-items:baseline; gap:6px }
   h2 .meta { font-weight:400; color:var(--muted) }
@@ -70,7 +74,9 @@
      damit die Hervorhebung bis an den Panelrand reicht. Ohne das Polster hier
      zählen diese 6px rechts als Überlauf und erzeugen eine waagerechte
      Bildlaufleiste; padding und negativer Rand heben sich exakt auf. */
-  #results { flex:0 1 auto; max-height:38vh; padding-inline:6px; margin-inline:-6px }
+  /* flex:1, damit die Liste die Höhe der Zeile auch ausfüllt; die Obergrenze
+     hält die auto-Zeile davon ab, dem Formular den Platz wegzunehmen. */
+  #results { flex:1 1 auto; max-height:44vh; padding-inline:6px; margin-inline:-6px }
 
   .drop { display:block; position:relative; border:1.5px dashed var(--field-line); border-radius:var(--r);
           padding:28px 10px; text-align:center; color:var(--muted); cursor:pointer;
