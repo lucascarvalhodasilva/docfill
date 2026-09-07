@@ -894,7 +894,7 @@ function renderResults() {
     div.style.animationDelay = Math.min(i, 6) * 25 + "ms";
     div.innerHTML = `<span class="name" title="${esc(r.name)}">${esc(r.name)}</span><span class="size">${size(r.blob.size)}</span>
       <button class="menu-btn" data-i="${i}" aria-haspopup="menu" aria-expanded="false" aria-controls="resultMenu"
-        aria-label="Aktionen für ${esc(r.name)}">Aktionen<span class="caret" aria-hidden="true">▾</span></button>
+        aria-label="Aktionen für ${esc(r.name)}">Aktionen<span class="caret" aria-hidden="true"></span></button>
       <button class="x" data-a="del" title="Aus der Liste entfernen" aria-label="${esc(r.name)} aus der Liste entfernen">✕</button>`;
     const mb = div.querySelector(".menu-btn");
     mb.onclick = () => openResultMenu(mb, r, () => $("results").querySelector(`.menu-btn[data-i="${i}"]`));

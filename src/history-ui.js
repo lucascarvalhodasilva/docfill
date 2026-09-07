@@ -51,7 +51,7 @@ export function renderHistory(box, runs, onMenu) {
         <span class="size">${esc(size(d.size))}</span>
         <button class="menu-btn" data-run="${esc(run.id)}" data-doc="${di}"
           aria-haspopup="menu" aria-expanded="false"
-          aria-label="Aktionen für ${esc(d.name)}">Aktionen<span class="caret" aria-hidden="true">▾</span></button>`;
+          aria-label="Aktionen für ${esc(d.name)}">Aktionen<span class="caret" aria-hidden="true"></span></button>`;
       const mb = row.querySelector(".menu-btn");
       mb.onclick = () => onMenu(mb, run.id, di);
       sec.appendChild(row);

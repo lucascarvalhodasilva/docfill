@@ -88,6 +88,38 @@ button.link:disabled { opacity:.4; cursor:default }
              background:none; border:0; border-radius:var(--r-sm); color:var(--muted); cursor:pointer;
              transition:color var(--dur) var(--ease), background var(--dur) var(--ease) }
 .result .x:hover { color:var(--danger); background:rgba(239,125,115,.12) }
+
+/* ---- Aktionsmenü je Zeile ----
+   Sie führt nichts aus, sie klappt auf — und darf deshalb nicht aussehen wie
+   die Schaltflächen der Fußzeile. Umrandet und gefüllt ergäbe sie zudem eine
+   Wand aus Kästchen am rechten Rand der Liste. Sie tritt darum zurück, bis die
+   Zeile berührt wird oder das Menü offen steht; die Beschriftung bleibt
+   sichtbar. Das Dreieck trägt die ganze Ankündigung und muss deshalb auffallen:
+   in der Akzentfarbe und groß genug, um als Pfeil lesbar zu sein — daran, nicht
+   am Rahmen, erkennt man ein Menü. Es dreht sich beim Öffnen, und die
+   Schaltfläche bleibt solange eingedrückt: sonst wäre bei mehreren Zeilen nicht
+   zu sehen, welche gemeint ist.
+   In drei Stufen: in Ruhe nur Wort und Pfeil, bei berührter Zeile ein Rahmen,
+   unter dem Zeiger die gefüllte Fläche.
+   Die Zustände tragen :not(:disabled), sonst gewinnt die allgemeine
+   button:hover-Regel (drei Merkmale) über die Klasse. */
+.menu-btn { display:inline-flex; align-items:center; gap:6px; flex:none;
+            padding:3px 8px; background:none; border:1px solid transparent; border-radius:var(--r-sm);
+            color:var(--ink); font:inherit; cursor:pointer;
+            transition:background var(--dur) var(--ease), border-color var(--dur) var(--ease),
+                       color var(--dur) var(--ease) }
+/* Als Rahmen-Dreieck gezeichnet, nicht als Schriftzeichen: „▾" sitzt tief in
+   seiner Zeile, die Drehung um die Kastenmitte schwenkte es sichtbar nach oben,
+   statt es an Ort und Stelle umzuklappen. Hier füllt die Form ihren Kasten
+   genau aus, also kippt sie um die eigene Mittelachse. */
+.menu-btn .caret { width:0; height:0; flex:none;
+                   border-left:4px solid transparent; border-right:4px solid transparent;
+                   border-top:5px solid var(--accent);
+                   transition:transform var(--dur) var(--ease) }
+.result:hover .menu-btn { border-color:var(--line) }
+.menu-btn:hover:not(:disabled), .menu-btn[aria-expanded=true]:not(:disabled) {
+  background:var(--raised); border-color:var(--field-line) }
+.menu-btn[aria-expanded=true] .caret { transform:rotate(180deg) }
 @keyframes rowIn { from { opacity:0; transform:translateY(-3px) } to { opacity:1; transform:none } }
 
 /* ---- Historie: je Ausfüll-Vorgang ein Abschnitt ----
@@ -114,16 +146,6 @@ button.link:disabled { opacity:.4; cursor:default }
 .run h3 .at { color:var(--muted); font-variant-numeric:tabular-nums; flex:none }
 .run h3 .who { font-weight:600; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
 .run h3 .meta { margin-left:auto; color:var(--muted); flex:none }
-/* In der Historie stehen viele Zeilen untereinander; eine umrandete
-   Schaltfläche je Zeile ergäbe eine Wand aus Kästchen am rechten Rand. Sie
-   tritt deshalb zurück, bis die Zeile berührt wird oder das Menü offen steht.
-   Die Beschriftung bleibt sichtbar — nur der Rahmen verschwindet. */
-.run .menu-btn { background:none; border-color:transparent; color:var(--muted) }
-.run .result:hover .menu-btn, .run .menu-btn:focus-visible {
-  background:var(--sunk); border-color:var(--field-line); color:var(--ink) }
-.run .menu-btn[aria-expanded=true] {
-  background:var(--sunk); border-color:var(--accent); color:var(--ink) }
-
 /* ---- Aufklappmenü ----
    Hängt in jeder Seite direkt am <body>: die Panels scrollen, innerhalb würde
    das Menü abgeschnitten. Die Position wird per CSSOM gesetzt, ein
@@ -138,11 +160,3 @@ button.link:disabled { opacity:.4; cursor:default }
 .menu button.danger { color:var(--danger) }
 .menu button.danger:hover:not(:disabled), .menu button.danger:focus-visible { background:rgba(239,125,115,.12) }
 .menu button:disabled { opacity:.4; cursor:default; background:none }
-/* Aktionen der Zeile: die Schaltfläche, die das Menü aufklappt. Solange es offen
-   steht, bleibt sie eingedrückt und der Pfeil zeigt nach oben — sonst wäre bei
-   mehreren Zeilen nicht zu sehen, welche gemeint ist. */
-.menu-btn { flex:none; display:inline-flex; align-items:center; gap:5px }
-.menu-btn .caret { font-size:9px; line-height:1; color:var(--muted);
-                   transition:transform var(--dur) var(--ease) }
-.menu-btn[aria-expanded=true] { background:var(--sunk); border-color:var(--accent) }
-.menu-btn[aria-expanded=true] .caret { transform:rotate(180deg) }
