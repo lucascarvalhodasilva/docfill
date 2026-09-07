@@ -28,7 +28,10 @@
 body { font:13px/1.45 -apple-system,"Segoe UI",system-ui,sans-serif; color:var(--ink); background:var(--canvas) }
 
 /* ---- form fields ---- */
-.field { padding:7px 0; border-top:1px solid var(--line) } .field:first-child { border-top:0; padding-top:0 }
+/* Ohne Trennlinien: bei einem Feld je Zeile trennt der Abstand schon deutlich
+   genug, die Linien zerlegten das Formular zusätzlich in lauter Streifen.
+   Dafür etwas mehr Luft, damit Beschriftung und Feld als Paar zusammenbleiben. */
+.field { padding-block:9px } .field:first-child { padding-top:0 }
 label.t { display:block; font-weight:600; margin-bottom:3px }
 label.t .meta { font-weight:400; color:var(--muted); margin-left:6px }
 input[type=text],input[type=date],select,textarea {

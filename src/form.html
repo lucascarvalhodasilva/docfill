@@ -6,13 +6,35 @@
 <title>Formular</title>
 <link rel="stylesheet" href="app.css">
 <style>
-  /* Ein einspaltiges Fenster: Kopfzeile, scrollende Feldliste, Fußzeile. */
-  body { display:flex; flex-direction:column; padding:14px; gap:10px; overflow:hidden }
-  h2 { font-size:12px; font-weight:600; margin:0; display:flex; align-items:baseline; gap:6px;
+  /* Ein einspaltiges Fenster: Kopfzeile, scrollende Feldliste, Fußzeile.
+     Waagerecht polstert nicht der Rumpf, sondern die scrollende Liste selbst:
+     nur so reicht sie bis an den Fensterrand und die Bildlaufleiste sitzt dort,
+     statt mitten im Fenster am Rand der 640px-Spalte zu kleben. */
+  body { display:flex; flex-direction:column; padding:14px 0; gap:10px; overflow:hidden }
+  h2 { font-size:12px; font-weight:600; margin:0 14px; display:flex; align-items:center; gap:6px;
        padding-bottom:9px; border-bottom:1px solid var(--line) }
   h2 .meta { font-weight:400; color:var(--muted) }
-  #form { overflow-y:auto; flex:1; min-height:0; width:100%; max-width:640px; margin:0 auto }
-  footer { padding-top:9px; border-top:1px solid var(--line) }
+  /* max() statt max-width: der Inhalt bleibt auf 640px zentriert, das Polster
+     wächst mit dem Fenster, und unter 668px bleiben es die 14px der Kopfzeile. */
+  #form { overflow-y:auto; flex:1; min-height:0;
+          padding-inline:max(14px, calc((100% - 640px) / 2));
+          scrollbar-width:thin; scrollbar-color:var(--field-line) transparent }
+  /* Ältere WebKit-Fassungen kennen scrollbar-width nicht; dort die schmale
+     Leiste selbst zeichnen. Wo die Norm greift, bleibt es beim Systemverhalten
+     (macOS blendet sie ein und aus), deshalb nur im @supports-Zweig. */
+  @supports not (scrollbar-width: thin) {
+    #form::-webkit-scrollbar { width:11px }
+    #form::-webkit-scrollbar-track { background:transparent }
+    #form::-webkit-scrollbar-thumb { background:var(--line); border-radius:999px;
+                                     border:3px solid transparent; background-clip:content-box }
+    #form:hover::-webkit-scrollbar-thumb { background:var(--field-line); background-clip:content-box }
+  }
+
+  /* Fußzeile wie im Hauptfenster: gleiche Linie, gleiche Höhe, und die
+     Hauptaktion nimmt den freien Platz statt eines Abstandhalters. */
+  footer { margin:0 14px; padding-top:9px; border-top:1px solid var(--line) }
+  footer .row button { padding-block:7px }
+  footer .row .primary { flex:1 }
   .empty { color:var(--muted); display:flex; flex-direction:column; align-items:center; justify-content:center;
            text-align:center; gap:3px; height:100%; min-height:72px; padding:12px; max-width:44ch; margin:0 auto }
   .empty b { color:var(--ink); font-weight:600 }
@@ -22,8 +44,9 @@
 <h2>Formular<span class="meta" id="formMeta"></span></h2>
 <div id="form"></div>
 <footer>
-  <div class="row"><button id="fill" class="primary" disabled>Ausgewählte Dokumente ausfüllen</button>
-    <span id="status" role="status" aria-live="polite"></span></div>
+  <div class="row"><span id="status" role="status" aria-live="polite"></span>
+    <button id="cancel">Abbrechen</button>
+    <button id="fill" class="primary" disabled>Ausgewählte Dokumente ausfüllen</button></div>
 </footer>
 
 <script type="module">
@@ -90,9 +113,22 @@ async function submit() {
     $("fill").setAttribute("aria-busy", false);
   }
 }
+// Abbrechen schließt nur das Fenster — dieselbe Wirkung wie das Schließen über
+// die Titelleiste. Nichts geht verloren: die Werte werden vorher gesichert und
+// stehen beim nächsten Öffnen der Gruppe wieder da. Deshalb auch keine Nachfrage.
+function cancel() {
+  cacheNow();
+  invoke("close_form_window").catch(() => {});
+}
+
 $("fill").onclick = submit;
-// ⌘↵ / Ctrl+↵ füllt aus — dieselbe Tastenkombination wie früher im Hauptfenster
-addEventListener("keydown", e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); } });
+$("cancel").onclick = cancel;
+// ⌘↵ / Ctrl+↵ füllt aus — dieselbe Tastenkombination wie früher im Hauptfenster,
+// Esc bricht ab, wie in einem Dialog.
+addEventListener("keydown", e => {
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); }
+  else if (e.key === "Escape") { e.preventDefault(); cancel(); }
+});
 
 load();
 </script>

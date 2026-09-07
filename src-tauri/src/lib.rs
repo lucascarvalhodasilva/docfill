@@ -293,7 +293,9 @@ async fn open_form_window(
     *bridge.shown.lock().map_err(|_| oops())? = Some(label.clone());
     tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App("form.html".into()))
         .title("Formular")
-        .inner_size(720.0, 760.0)
+        // 668 = die 640px breite Feldspalte aus form.html plus die 14px Polster
+        // links und rechts: breiter wird das Fenster nur zu leerem Rand.
+        .inner_size(668.0, 640.0)
         .min_inner_size(420.0, 420.0)
         .build()
         .map(|_| ())
