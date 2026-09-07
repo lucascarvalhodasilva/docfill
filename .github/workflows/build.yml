@@ -1,0 +1,53 @@
+# Baut den Windows-Installer, damit dafür kein Windows-Rechner nötig ist.
+# Der Runner von GitHub bringt Build Tools und WebView2 schon mit — genau die
+# beiden Dinge, die von Hand eingerichtet werden müssten (siehe BUILD-WINDOWS.md).
+name: build
+
+on:
+  # Von Hand auslösen: Actions ▸ build ▸ Run workflow.
+  workflow_dispatch:
+  # Ein Versionsschild baut ebenfalls.
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows-Installer
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Ohne Zwischenspeicher übersetzt Rust bei jedem Lauf alles neu: 10–20
+      # Minuten statt ein bis zwei. Das Crate liegt in src-tauri/, nicht oben.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      # Derselbe Befehl wie in BUILD-WINDOWS.md, damit Anleitung und Bauplan
+      # nicht auseinanderlaufen. `beforeBuildCommand` in tauri.conf.json ruft
+      # zuerst scripts/check.mjs auf — ein Fehler in der Oberfläche bricht hier
+      # ab, statt einen tadellosen Installer mit kaputter Oberfläche zu liefern.
+      - run: npm run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docfill-windows-installer
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
+          # Ohne das gilt ein Lauf auch dann als geglückt, wenn das Bündeln
+          # still nichts erzeugt hat.
+          if-no-files-found: error
+          retention-days: 30

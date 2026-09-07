@@ -1,10 +1,27 @@
 # Docfill unter Windows bauen
 
-Diese Anleitung richtet sich an die Person, die den Windows-Rechner hat. Am Ende
-entsteht eine Installationsdatei, die per USB-Stick weitergegeben werden kann.
-Einmaliger Aufwand: etwa 30 Minuten, davon das meiste Wartezeit.
+Es gibt zwei Wege zur Installationsdatei. Der erste braucht keinen
+Windows-Rechner.
 
-## 1. Projekt auf den Windows-Rechner kopieren
+## Der einfache Weg: GitHub bauen lassen
+
+Auf GitHub unter **Actions ▸ build ▸ Run workflow** den Lauf auf `main` starten.
+Der erste Durchlauf dauert 10–20 Minuten, spätere ein bis zwei. Danach liegt die
+fertige Datei unten im Lauf unter **Artifacts** im Paket
+`docfill-windows-installer`: herunterladen, entpacken, auf den USB-Stick.
+
+Gebaut wird nach `.github/workflows/build.yml` auf einem Windows-Rechner von
+GitHub. Node, Rust und die Build Tools sind dort schon eingerichtet — die
+Installation aus Abschnitt 2 entfällt damit komplett. Ein Versionsschild
+(`git tag v0.1.0 && git push --tags`) löst denselben Lauf aus.
+
+## Der andere Weg: von Hand auf einem Windows-Rechner
+
+Nötig, wenn ohne GitHub gebaut werden soll. Der Rest dieser Anleitung richtet
+sich an die Person, die den Windows-Rechner hat. Einmaliger Aufwand: etwa 30
+Minuten, davon das meiste Wartezeit.
+
+### 1. Projekt auf den Windows-Rechner kopieren
 
 Den Projektordner `docfill-tauri` kopieren — **ohne** diese beiden Unterordner,
 die nur Zwischenergebnisse enthalten und mehrere Gigabyte groß sein können:
@@ -12,7 +29,7 @@ die nur Zwischenergebnisse enthalten und mehrere Gigabyte groß sein können:
 - `node_modules`
 - `src-tauri/target`
 
-## 2. Einmalig installieren
+### 2. Einmalig installieren
 
 | Was | Woher | Hinweis |
 | --- | --- | --- |
@@ -25,7 +42,7 @@ Build später mit einer Meldung über einen fehlenden Linker (`link.exe`) ab.
 
 Nach der Installation einmal ab- und wieder anmelden, damit die Pfade greifen.
 
-## 3. Bauen
+### 3. Bauen
 
 Eingabeaufforderung oder PowerShell im Projektordner öffnen:
 
@@ -37,7 +54,7 @@ npm run build
 Der erste Durchlauf dauert 10–20 Minuten, weil Rust alle Abhängigkeiten übersetzt.
 Spätere Durchläufe brauchen ein bis zwei Minuten.
 
-## 4. Ergebnis
+### 4. Ergebnis
 
 Die fertige Installationsdatei liegt hier:
 
