@@ -29,24 +29,43 @@
             Mindesthöhe aus tauri.conf.json oben noch Platz fürs Formular ist. */
          grid-template-rows:minmax(0,1fr) minmax(min(250px,40vh),auto) }
 
-  h2 { font-size:12px; font-weight:600; margin:0; display:flex; align-items:baseline; gap:6px }
+  /* Alle drei Überschriften sind gleich gebaut und gleich hoch: seit in der
+     Leiste die Einklapp-Schaltfläche steht, gibt deren Höhe die Zeile vor.
+     Ohne Untergrenze säße die Linie unter „Dokumente" 9px tiefer als die unter
+     „Formular" und der Text 4px. Die Grenze zählt Innenabstand und Linie mit,
+     weil box-sizing global border-box ist — sonst bliebe für den Inhalt nur
+     16px und in den Panels griffe sie überhaupt nicht.
+     Mittig statt an der Schriftlinie, weil hier alles 12px ist. */
+  h2 { font-size:12px; font-weight:600; margin:0; display:flex; align-items:center; gap:6px }
   h2 .meta { font-weight:400; color:var(--muted) }
-  aside > h2, section.panel > h2 { padding-bottom:9px; border-bottom:1px solid var(--line) }
+  aside > h2, section.panel > h2 { min-height:calc(26px + 9px + 1px); padding-bottom:9px;
+                                   border-bottom:1px solid var(--line) }
   aside > .row, section.panel > .row { padding-top:9px; border-top:1px solid var(--line) }
+  /* Die Auswahl steht über der Trennlinie der Fußzeile statt in der Überschrift:
+     dort stand sie am anderen Ende der Leiste, weit weg von den Schaltflächen,
+     auf die sie sich bezieht. Leer wird sie ausgeblendet, sonst bliebe eine
+     Lücke zwischen Liste und Fußzeile. */
+  #docCount { color:var(--muted); font-size:12px }
+  #docCount:empty { display:none }
   /* margin-top:auto hält die Leiste unten, auch solange die Liste leer ist und
      nichts sie nach unten schiebt. Bei vollem Panel bleibt sie wirkungslos. */
   aside > .row { margin-top:auto }
-  /* Kein Abstandhalter zwischen den beiden: in der schmalen Leiste riss der
-     die Schaltflächen an die Ränder und ließ ein Loch dazwischen. Stattdessen
-     nimmt die Hauptaktion den freien Platz — größeres Ziel, klare Rangfolge. */
-  aside > .row .primary { flex:1 }
-  aside > .row button { padding-block:7px }
+  /* Fußzeile der Leiste und der Panels: gleiche Höhe, gleicher Aufbau. Kein
+     Abstandhalter zwischen den Schaltflächen — der riss sie nur an die Ränder
+     und ließ ein Loch dazwischen. Stattdessen nimmt die Hauptaktion den freien
+     Platz: größeres Ziel, klare Rangfolge, und die Nebenaktion bleibt schmal. */
+  aside > .row .primary, section.panel > .row .primary { flex:1 }
+  aside > .row button, section.panel > .row button { padding-block:7px }
 
   /* ---- Seitenleiste einklappen ----
      Eingeklappt bleibt eine Schiene stehen: die Schaltfläche behält ihren
      Platz, statt dass die Leiste ganz verschwindet und der Weg zurück gesucht
      werden muss. Die Zahl darunter zeigt, dass die Auswahl noch da ist. */
-  #toggleSidebar { align-self:center; flex:none; display:grid; place-items:center; width:26px; height:26px;
+  /* Am Ende der Kopfzeile, wie „Historie" im Ergebnis-Panel: so beginnt
+     „Dokumente" am selben Rand wie „Formular", statt um die Schaltfläche
+     eingerückt zu sein. Eingeklappt ist die Zeile nur so breit wie die
+     Schaltfläche, dort läuft margin-left:auto ins Leere. */
+  #toggleSidebar { margin-left:auto; flex:none; display:grid; place-items:center; width:26px; height:26px;
                    padding:0; background:none; border:1px solid transparent; border-radius:var(--r-sm);
                    color:var(--muted); font:inherit; font-size:13px; line-height:1; cursor:pointer;
                    transition:background var(--dur) var(--ease), color var(--dur) var(--ease) }
@@ -56,12 +75,11 @@
   #railCount { display:none }
 
   body[data-sidebar=collapsed] aside { padding:10px 0; gap:8px; align-items:center; overflow:hidden }
-  body[data-sidebar=collapsed] aside > h2 { padding-bottom:0; border-bottom:0 }
-  body[data-sidebar=collapsed] aside > .drop,
-  body[data-sidebar=collapsed] aside > ul,
-  body[data-sidebar=collapsed] aside > .row,
-  body[data-sidebar=collapsed] aside > h2 > .title,
-  body[data-sidebar=collapsed] aside > h2 > .meta { display:none }
+  body[data-sidebar=collapsed] aside > h2 { min-height:auto; padding-bottom:0; border-bottom:0 }
+  /* Auf der Schiene bleiben nur die Überschrift mit ihrer Schaltfläche und die
+     Zahl; als :not-Paar, damit später hinzukommende Kinder nicht durchrutschen. */
+  body[data-sidebar=collapsed] aside > :not(h2):not(#railCount),
+  body[data-sidebar=collapsed] aside > h2 > .title { display:none }
   body[data-sidebar=collapsed] #railCount { display:block; padding:1px 6px; border-radius:999px;
                                             background:var(--raised); color:var(--muted); font-size:11px;
                                             font-variant-numeric:tabular-nums }
@@ -164,31 +182,32 @@
 </head>
 <body>
 <aside id="sidebar">
-  <h2><button id="toggleSidebar" type="button" aria-controls="sidebar" aria-expanded="true"></button>
-    <span class="title">Dokumente</span><span class="meta" id="docCount"></span></h2>
+  <h2><span class="title">Dokumente</span>
+    <button id="toggleSidebar" type="button" aria-controls="sidebar" aria-expanded="true"></button></h2>
   <span id="railCount" aria-hidden="true"></span>
   <label class="drop" id="drop">.docx-Dateien hierher ziehen<kbd>oder klicken zum Auswählen</kbd>
     <input type="file" id="pick" accept=".docx" multiple></label>
   <ul id="files"></ul>
+  <span class="meta" id="docCount"></span>
   <div class="row"><button id="all" disabled title="Alle Dokumente auswählen">Alle</button>
     <button id="build" class="primary" disabled>Formular erstellen</button></div>
 </aside>
 
 <main>
   <section class="panel">
-    <h2>Formular<span class="meta" id="formMeta"></span></h2>
+    <h2><span class="title">Formulare</span><span class="meta" id="formMeta"></span></h2>
     <div id="form"><div class="empty"><b>Noch kein Formular</b>Links Dokumente hinzufügen und daraus das Formular
       mit den gemeinsamen Inhaltssteuerelementen erstellen.</div></div>
     <div class="row"><span id="status" role="status" aria-live="polite"></span></div>
   </section>
   <section class="panel">
-    <h2>Ausgefüllte Dokumente<span class="meta" id="resultCount"></span>
+    <h2><span class="title">Ausgefüllte Dokumente</span><span class="meta" id="resultCount"></span>
       <button id="openHistory" class="link" disabled
         title="Alles, was in dieser Sitzung ausgefüllt wurde">Historie</button></h2>
     <div id="results"><div class="empty"><b>Noch nichts ausgefüllt</b>Ausgefüllte Kopien bleiben hier, bis das
       Programm beendet wird; die Originale werden nie verändert.</div></div>
-    <div class="row"><button id="saveAll" disabled>Alle speichern…</button><span class="spacer"></span>
-      <button id="deleteAll" disabled>Alle löschen</button></div>
+    <div class="row"><button id="deleteAll" disabled>Alle löschen</button>
+      <button id="saveAll" class="primary" disabled>Alle speichern…</button></div>
   </section>
 </main>
 
