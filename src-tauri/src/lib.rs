@@ -710,10 +710,10 @@ pub fn run() {
         .manage(SaveTarget::default())
         .manage(FormBridge::default())
         .manage(HistoryBridge::default())
-        // Schließt jemand das Hauptfenster, während ein Formular- oder das
-        // Historie-Fenster noch offen steht, liefe der Prozess weiter: das
-        // Exit-Ereignis bliebe aus, der Staging-Ordner läge weiter im Temp und
-        // die Historie wäre nicht wirklich weg. Also gehen sie mit.
+        // Mit dem Hauptfenster endet das Programm. Ohne das hier lief der
+        // Prozess nach dem Schließen weiter — ohne Fenster, aber am Leben —,
+        // und damit blieb der Ablageordner im Temp liegen und die Historie
+        // wäre nicht wirklich weg gewesen.
         .setup(|app| {
             if let Some(main) = app.get_webview_window("main") {
                 let handle = app.handle().clone();
@@ -724,6 +724,14 @@ pub fn run() {
                                 let _ = w.close();
                             }
                         }
+                        // Hier aufräumen und nicht erst in RunEvent::Exit: das
+                        // Versprechen, dass nichts im Temp liegen bleibt, soll
+                        // nicht davon abhängen, über welchen Weg das Programm
+                        // endet. remove_dir_all darf ins Leere greifen.
+                        wipe_staging();
+                        // Ausdrücklich beenden, statt darauf zu bauen, dass
+                        // Tauri von selbst geht, wenn das letzte Fenster zu ist.
+                        handle.exit(0);
                     }
                 });
             }
@@ -755,11 +763,19 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running docfill")
         .run(|_app, event| {
-            // staged documents hold personal data; don't leave them in temp
+            // staged documents hold personal data; don't leave them in temp.
+            // Zweiter Halt neben dem Fenster-Handler: greift für Wege, die am
+            // Hauptfenster vorbeigehen, etwa ⌘Q auf macOS.
             if let tauri::RunEvent::Exit = event {
-                let _ = fs::remove_dir_all(staging_dir());
+                wipe_staging();
             }
         });
+}
+
+/// Removes the staging folder. Idempotent — it may well be gone already, or
+/// never have been created, because `stage()` builds it only on first use.
+fn wipe_staging() {
+    let _ = fs::remove_dir_all(staging_dir());
 }
 
 #[cfg(test)]
