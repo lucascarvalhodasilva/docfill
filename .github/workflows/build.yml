@@ -6,13 +6,15 @@ name: build
 on:
   # Von Hand auslösen: Actions ▸ build ▸ Run workflow.
   workflow_dispatch:
-  # Ein Versionsschild baut ebenfalls.
+  # Ein Versionsschild baut ebenfalls — und veröffentlicht ein Release.
   push:
     tags:
       - "v*"
 
+# Schreibrecht, weil der letzte Schritt bei einem Versionsschild ein Release
+# anlegt. Für einen Lauf von Hand bleibt es ungenutzt.
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   windows:
@@ -21,6 +23,19 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      # Das Schild und die Version in tauri.conf.json müssen zusammenpassen,
+      # sonst heißt die Datei im Release `Docfill_0.1.0_x64-setup.exe`, obwohl
+      # das Schild v0.2.0 verspricht. Lieber gleich hier abbrechen als nach
+      # zwanzig Minuten Bauzeit.
+      - name: Version prüfen
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart("v")
+          $conf = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ($tag -ne $conf) {
+            throw "Schild $tag passt nicht zur Version $conf in src-tauri/tauri.conf.json"
+          }
 
       - uses: actions/setup-node@v4
         with:
@@ -51,3 +66,17 @@ jobs:
           # still nichts erzeugt hat.
           if-no-files-found: error
           retention-days: 30
+
+      # Nur bei einem Versionsschild: ein Release mit dauerhaftem Download-Link.
+      # Das Artefakt oben verfällt nach 30 Tagen und ist nur angemeldet
+      # erreichbar — ein Release-Anhang bleibt und lässt sich weitergeben.
+      - name: Release veröffentlichen
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            src-tauri/target/release/bundle/nsis/*-setup.exe
+            src-tauri/target/release/bundle/msi/*.msi
+          # Aus demselben Grund wie oben bei `if-no-files-found`.
+          fail_on_unmatched_files: true
+          generate_release_notes: true

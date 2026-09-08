@@ -12,8 +12,25 @@ fertige Datei unten im Lauf unter **Artifacts** im Paket
 
 Gebaut wird nach `.github/workflows/build.yml` auf einem Windows-Rechner von
 GitHub. Node, Rust und die Build Tools sind dort schon eingerichtet — die
-Installation aus Abschnitt 2 entfällt damit komplett. Ein Versionsschild
-(`git tag v0.1.0 && git push --tags`) löst denselben Lauf aus.
+Installation aus Abschnitt 2 entfällt damit komplett.
+
+## Eine Fassung veröffentlichen
+
+Ein Versionsschild löst denselben Lauf aus und hängt das Ergebnis zusätzlich an
+ein Release — anders als das Artefakt oben verfällt das nicht nach 30 Tagen und
+lässt sich auch ohne GitHub-Konto herunterladen.
+
+Zuerst die Version in `src-tauri/tauri.conf.json` (und, damit beides beieinander
+bleibt, in `src-tauri/Cargo.toml`) auf die neue Nummer setzen und einchecken —
+sie benennt die Installationsdatei. Weicht sie vom Schild ab, bricht der Lauf
+gleich zu Beginn ab, statt eine falsch benannte Datei zu veröffentlichen.
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Danach steht unter **Releases** `Docfill_0.1.0_x64-setup.exe` samt `.msi`.
 
 ## Der andere Weg: von Hand auf einem Windows-Rechner
 
