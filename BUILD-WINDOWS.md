@@ -18,7 +18,8 @@ Installation aus Abschnitt 2 entfällt damit komplett.
 
 Ein Versionsschild löst denselben Lauf aus und hängt das Ergebnis zusätzlich an
 ein Release — anders als das Artefakt oben verfällt das nicht nach 30 Tagen und
-lässt sich auch ohne GitHub-Konto herunterladen.
+hat einen festen Link. Solange das Projekt privat ist, braucht es zum
+Herunterladen weiterhin ein GitHub-Konto mit Zugriff.
 
 Zuerst die Version in `src-tauri/tauri.conf.json` (und, damit beides beieinander
 bleibt, in `src-tauri/Cargo.toml`) auf die neue Nummer setzen und einchecken —
