@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="app.css">
 <style>
   /* Farben, Formularfelder, Schaltflächen und die Statuszeile stehen in
-     app.css und werden mit form.html geteilt. Hier nur das Seitenlayout. */
+     app.css und werden mit den Nebenfenstern geteilt. Hier nur das Seitenlayout. */
   body { display:grid; grid-template-columns:274px minmax(0,1fr);
          transition:grid-template-columns var(--dur) var(--ease) }
   body[data-sidebar=collapsed] { grid-template-columns:58px minmax(0,1fr) }
@@ -113,11 +113,16 @@
   li.file label { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; padding:3px 0;
                   transition:color var(--dur) var(--ease) }
   li.file:has(input:not(:checked)) label { color:var(--muted) }
-  li.file .x { display:grid; place-items:center; width:22px; height:22px; flex:none; padding:0; font-size:12px;
+  li.file .x, li.file .gear { display:grid; place-items:center; width:22px; height:22px; flex:none; padding:0; font-size:12px;
                background:none; border:0; border-radius:var(--r-sm); color:var(--muted); cursor:pointer; opacity:0;
                transition:opacity var(--dur) var(--ease), color var(--dur) var(--ease), background var(--dur) var(--ease) }
-  li.file:hover .x, li.file .x:focus-visible { opacity:1 }
+  li.file:hover .x, li.file .x:focus-visible,
+  li.file:hover .gear, li.file .gear:focus-visible { opacity:1 }
   li.file .x:hover { color:var(--danger); background:rgba(239,125,115,.12) }
+  li.file .gear:hover { color:var(--accent); background:rgba(95,162,224,.12) }
+  /* Weicht die Datei von den automatischen Schlüsseln ab, bleibt das Zahnrad
+     stehen: sonst sähe man der Liste nicht an, dass dort etwas eingestellt ist. */
+  li.file[data-keys] .gear { opacity:1; color:var(--accent) }
 
   /* ---- Formular-Kachel ----
      Unter #form gehalten, damit die Kachel die allgemeinen button-Regeln aus
@@ -155,6 +160,8 @@
   /* ---- Ersatzdialog ohne Tauri ---- */
   #dlgForm { flex:1; overflow-y:auto; padding:12px }
   #dlgHistory { flex:1; overflow-y:auto; padding:12px }
+  #dlgKeys { flex:1; overflow-y:auto; padding:12px }
+  dialog .bar .meta { color:var(--muted) }
 
   /* Ergebnisliste, Aufklappmenü und der Link in der Kopfzeile stehen in app.css:
      das Historie-Fenster zeigt dieselben Zeilen. */
@@ -262,6 +269,16 @@
   <div id="dlgHistory"></div>
 </dialog>
 
+<!-- Ersatz für das Zahnrad-Fenster ohne Tauri, wie formDlg für das Formular -->
+<dialog id="keysDlg">
+  <div class="bar"><b id="keysName"></b><span id="keysMeta" class="meta"></span>
+    <button id="keysCancel">Abbrechen</button></div>
+  <div id="dlgKeys"></div>
+  <div class="bar"><label class="check"><input type="checkbox" id="writeTagsDlg">
+      <span id="writeTagsDlgNote">Schlüssel dauerhaft ins Dokument schreiben (w:tag)</span></label>
+    <button id="keysOk" class="primary">Übernehmen</button></div>
+</dialog>
+
 <!-- Ersatz für das zweite Fenster, wenn die Oberfläche ohne Tauri im Browser läuft -->
 <dialog id="formDlg">
   <div class="bar"><b>Formular</b><span id="dlgFormMeta" class="meta"></span><button id="formDlgClose">Schließen</button></div>
@@ -276,16 +293,23 @@
 import { invoke, listen } from "./vendor/tauri-api.js";
 import { renderFields, collectValues, esc } from "./form-ui.js";
 import { defineMenu, openMenu, closeMenu, menuOpenFor } from "./menu-ui.js";
+import { renderControls, collectOverrides, overrideMeta, writeTagsLabel } from "./keys-ui.js";
 import { renderHistory, size } from "./history-ui.js";
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const W14 = "http://schemas.microsoft.com/office/word/2010/wordml";
 const $ = id => document.getElementById(id);
 const native = typeof window.__TAURI_INTERNALS__ !== "undefined";  // inside the Tauri shell?
 
+const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
 const MAX_FILE = 25 * 1024 * 1024;   // a .docx larger than this is not a form
 const MAX_PART = 40 * 1024 * 1024;   // guards against a zip bomb in document.xml
 
-let docs = [];      // { name, buffer, selected }
+// `overrides` sind die im Zahnrad-Fenster vergebenen Schlüssel und die dort
+// abgewählten Felder: { [origKey]: { key?, hidden? } }. Siehe keyOf().
+// `onDisk` heißt: über den Öffnen-Dialog geladen, Rust kennt also den Pfad und
+// kann eine neue Fassung genau dorthin zurückschreiben.
+let docs = [];      // { id, name, buffer, selected, overrides, onDisk }
 let results = [];   // { name, blob } — immer die zuletzt ausgefüllten
 // Die Historie sammelt alle Läufe der Sitzung: { id, at, group, docs:[{name,blob}] }.
 // Sie hängt nicht an `results` — das wird bei jedem Ausfüllen geleert und von
@@ -336,13 +360,32 @@ const drop = $("drop");
 drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
 drop.ondragleave = () => drop.classList.remove("over");
 drop.ondrop = e => { e.preventDefault(); drop.classList.remove("over"); addFiles(e.dataTransfer.files); };
+// In der App führt der Klick über den nativen Öffnen-Dialog statt über das
+// <input>: nur so bleibt der Pfad der Datei bekannt, und nur dann lässt sich ein
+// Schlüssel später in dieselbe Datei zurückschreiben. Hereingezogene Dateien
+// bringen keinen Pfad mit — für die bleibt es beim Speichern-Dialog.
+if (native) drop.onclick = e => { e.preventDefault(); pickFiles(); };
+
+async function pickFiles() {
+  let picked;
+  try { picked = await invoke("pick_documents"); }
+  catch (e) { setStatus(String(e), true); return; }
+  const skipped = [];
+  for (const f of picked) {
+    if (f.oversize) { skipped.push(f.name); continue; }
+    docs.push({ id: f.id, name: f.name, buffer: new Uint8Array(f.bytes).buffer,
+                selected: true, overrides: {}, onDisk: true });
+  }
+  renderFiles();
+  if (skipped.length) setStatus(`Zu groß (max. ${MAX_FILE / 1048576} MB): ${skipped.join(", ")}`, true);
+}
 
 async function addFiles(list) {
   const skipped = [];
   for (const f of list) {
     if (!f.name.toLowerCase().endsWith(".docx")) continue;
     if (f.size > MAX_FILE) { skipped.push(f.name); continue; }
-    docs.push({ name: f.name, buffer: await f.arrayBuffer(), selected: true });
+    docs.push({ id: crypto.randomUUID(), name: f.name, buffer: await f.arrayBuffer(), selected: true, overrides: {}, onDisk: false });
   }
   renderFiles();
   if (skipped.length) setStatus(`Zu groß (max. ${MAX_FILE / 1048576} MB): ${skipped.join(", ")}`, true);
@@ -359,10 +402,15 @@ function renderFiles() {
   const ul = $("files"); ul.innerHTML = "";
   docs.forEach((d, i) => {
     const li = document.createElement("li"); li.className = "file";
+    const meta = overrideMeta(d.overrides);
+    if (meta) li.dataset.keys = "";   // das Zahnrad bleibt dann sichtbar, siehe CSS
     li.innerHTML = `<input type="checkbox" id="d${i}" ${d.selected ? "checked" : ""}>
       <label for="d${i}" title="${esc(d.name)}">${esc(d.name)}</label>
+      <button class="gear" title="Felder und Schlüssel${meta ? " — " + esc(meta) : ""}"
+        aria-label="Felder und Schlüssel von ${esc(d.name)}">\u2699</button>
       <button class="x" aria-label="${esc(d.name)} entfernen" title="Entfernen">✕</button>`;
     li.querySelector("input").onchange = e => { d.selected = e.target.checked; updateButtons(); };
+    li.querySelector(".gear").onclick = () => openKeys(d);
     li.querySelector(".x").onclick = () => { docs.splice(i, 1); renderFiles(); };
     ul.appendChild(li);
   });
@@ -421,14 +469,28 @@ function sdtKey(pr, sdt, pos, docName) {
   return "pos:" + docName + "#" + pos;
 }
 
-async function readControls(buffer, docName) {
+// Der Schlüssel, mit dem gearbeitet wird: der automatische aus `sdtKey`, sofern
+// im Zahnrad-Fenster nichts anderes eingetragen wurde. Eine Überschreibung ist
+// immer ein w:tag-Wert — „tag:X" ist genau der Schlüssel, den ein Dokument mit
+// diesem Tag von sich aus bekäme. Wer den Schlüssel später ins Dokument
+// schreiben lässt, ändert am Ergebnis deshalb nichts.
+//
+// Lesen (readControls) und Ausfüllen (fillDoc) müssen dieselbe Funktion
+// benutzen, sonst landen Werte in falschen Feldern.
+function keyOf(pr, sdt, pos, docName, overrides) {
+  const orig = sdtKey(pr, sdt, pos, docName);
+  const o = overrides && overrides[orig];
+  return { orig, key: o && o.key ? "tag:" + o.key : orig, hidden: !!(o && o.hidden) };
+}
+
+async function readControls(buffer, docName, overrides) {
   const zip = await JSZip.loadAsync(buffer), found = [];
   let pos = 0;
   for (const path of partPaths(zip)) {
     const xml = new DOMParser().parseFromString(await partText(zip, path), "application/xml");
     for (const sdt of Array.from(xml.getElementsByTagNameNS(W, "sdt"))) {
       const pr = sdt.getElementsByTagNameNS(W, "sdtPr")[0]; if (!pr) continue;
-      const key = sdtKey(pr, sdt, pos, docName); pos++;
+      const { orig, key, hidden } = keyOf(pr, sdt, pos, docName, overrides); pos++;
       const val = n => { const e = pr.getElementsByTagNameNS(W, n)[0]; return e ? e.getAttributeNS(W, "val") : ""; };
       const has = n => pr.getElementsByTagNameNS(W, n).length > 0;
       let type = "text", options = [];
@@ -444,7 +506,7 @@ async function readControls(buffer, docName) {
       // Der Text eines noch nicht ausgefüllten Steuerelements ist Words Platzhalter,
       // kein Wert. Er benennt das Feld und steht grau im Eingabefeld — geschrieben
       // wird er nie, sonst verlöre die Vorlage bei jedem Ausfüllen ihre Felder.
-      found.push({ key, tag, title, type, options, current: isPlaceholder ? "" : current, hint: isPlaceholder ? current : "" });
+      found.push({ orig, key, hidden, tag, title, type, options, current: isPlaceholder ? "" : current, hint: isPlaceholder ? current : "" });
     }
   }
   return found;
@@ -470,8 +532,9 @@ async function scanFields(list) {
   const byKey = new Map(); let n = 0, done = 0;
   for (const d of list) {
     setStatus(`Dokument ${++done} von ${list.length} wird gelesen…`);
-    const ctrls = await readControls(d.buffer, d.name);
+    const ctrls = await readControls(d.buffer, d.name, d.overrides);
     ctrls.forEach(c => {
+      if (c.hidden) return;   // im Zahnrad-Fenster abgewählt: gehört nicht ins Formular
       const key = c.key;   // gleicher Schlüssel in mehreren Dokumenten = ein Feld
       if (byKey.has(key)) {
         const prev = byKey.get(key); prev.count++;
@@ -492,7 +555,7 @@ async function buildForm() {
   busy($("build"), true);
   try {
     // eigene Kopie: die Gruppe überlebt es, wenn das Dokument links entfernt wird
-    const own = chosen.map(d => ({ name: d.name, buffer: d.buffer }));
+    const own = chosen.map(d => ({ name: d.name, buffer: d.buffer, overrides: d.overrides }));
     const fields = await scanFields(own);
     if (!fields.length) {
       if (!groups.length) renderEmpty("nofields");
@@ -591,7 +654,8 @@ function openResultMenu(btn, r, find) {
 // meta.json trägt Name, Felder und Antworten — nie Dokumentinhalte. Die gehen
 // einzeln über group_save_doc, sonst läge alles auf einmal in der IPC-Grenze.
 const metaOf = g => JSON.stringify({
-  name: g.name, fields: g.fields, values: g.values, docs: g.docs.map(d => d.name)
+  name: g.name, fields: g.fields, values: g.values,
+  docs: g.docs.map(d => ({ name: d.name, overrides: d.overrides }))
 });
 async function persistMeta(g) {
   if (!native || !g || !g.favorite) return;
@@ -636,7 +700,11 @@ async function loadFavorites() {
     let m; try { m = JSON.parse(s.meta); } catch { continue; }
     groups.push({
       id: s.id, name: m.name || "Formular", favorite: true,
-      docs: (m.docs || []).map(name => ({ name, buffer: null })),
+      // Ältere meta.json führen die Dokumente als bloße Namen — dann gibt es
+      // noch keine Überschreibungen.
+      docs: (m.docs || []).map(d => typeof d === "string"
+        ? { name: d, buffer: null, overrides: {} }
+        : { name: d.name, buffer: null, overrides: d.overrides || {} }),
       fields: m.fields || [], values: m.values || {}, loaded: false
     });
   }
@@ -750,6 +818,109 @@ $("dlgFill").onclick = () => {
   runFill(g.id, collectValues($("dlgForm"), g.fields));
 };
 
+/* ---------- Zahnrad: Felder und Schlüssel je Dokument ----------
+   Das Fenster bekommt nur die Beschreibungen der Inhaltssteuerelemente, nie das
+   Dokument: gelesen und geschrieben wird hier. Damit man einen Schlüssel nicht
+   abtippen muss, gehen zusätzlich die Schlüssel der anderen Dokumente mit —
+   erst dadurch lässt sich ein Feld gezielt mit einem vorhandenen zusammenlegen. */
+let keysTarget = null, keysControls = [];
+
+// Der Schlüssel, wie er ohne Überschreibung im Fenster stehen soll: der Teil
+// hinter dem Präfix, für den Platzhaltertext aufgeräumt wie eine Beschriftung.
+// Aus der Position lässt sich kein Name gewinnen — dort bleibt das Feld leer.
+function autoKey(orig) {
+  if (orig.startsWith("tag:")) return orig.slice(4);
+  if (orig.startsWith("alias:")) return orig.slice(6);
+  if (orig.startsWith("hint:")) return labelFrom(orig.slice(5));
+  return "";
+}
+
+async function openKeys(d) {
+  setStatus("Dokumente werden gelesen…");
+  let all;
+  try {
+    all = [];
+    for (const x of docs) all.push({ doc: x, ctrls: await readControls(x.buffer, x.name, x.overrides) });
+  } catch (e) { setStatus("Ein Dokument konnte nicht gelesen werden: " + e.message, true); return; }
+  setStatus("");
+
+  const mine = all.find(a => a.doc === d);
+  const others = all.filter(a => a.doc !== d);
+  // Nur „tag:"-Schlüssel taugen als Vorschlag: alles andere ließe sich hier gar
+  // nicht eintragen, weil eine Überschreibung immer ein Tag-Wert ist.
+  const known = [...new Set(all.flatMap(a => a.ctrls.map(c => c.key))
+    .filter(k => k.startsWith("tag:")).map(k => k.slice(4)))].sort((a, b) => a.localeCompare(b, "de"));
+  let n = 0;
+  const controls = mine.ctrls.map(c => ({
+    orig: c.orig,
+    auto: autoKey(c.orig),
+    key: (d.overrides[c.orig] && d.overrides[c.orig].key) || "",
+    hidden: c.hidden,
+    title: c.title || c.tag || labelFrom(c.hint) || `Feld ${++n}`,
+    type: c.type,
+    // wie viele der anderen Dokumente dasselbe Feld haben — das ist es, was
+    // ein geänderter Schlüssel bewirken soll
+    shared: others.filter(a => a.ctrls.some(o => o.key === c.key)).length
+  }));
+
+  if (native) {
+    const payload = JSON.stringify({ docId: d.id, name: d.name, onDisk: !!d.onDisk, controls, known });
+    try { await invoke("open_keys_window", { payload, id: d.id }); }
+    catch (e) { setStatus(String(e), true); }
+    return;
+  }
+  // Ohne Tauri gibt es kein zweites Fenster — derselbe Inhalt als Dialog.
+  keysTarget = d; keysControls = controls;
+  $("keysName").textContent = d.name;
+  $("keysMeta").textContent = `${controls.length} Steuerelement${controls.length === 1 ? "" : "e"}`;
+  $("writeTagsDlg").checked = false;
+  $("writeTagsDlgNote").textContent = writeTagsLabel(false);   // ohne Tauri gibt es keinen Pfad
+  renderControls($("dlgKeys"), controls, known);
+  $("keysDlg").showModal();
+}
+$("keysCancel").onclick = () => { keysTarget = null; $("keysDlg").close(); };
+$("keysOk").onclick = () => {
+  const d = keysTarget;
+  $("keysDlg").close();
+  if (!d) return;
+  keysTarget = null;
+  applyOverrides({ docId: d.id, overrides: collectOverrides($("dlgKeys"), keysControls),
+                   writeTags: $("writeTagsDlg").checked });
+};
+
+async function applyOverrides(p) {
+  const d = docs.find(x => x.id === p.docId);
+  if (!d) { setStatus("Die Datei steht nicht mehr in der Liste.", true); return; }
+  d.overrides = p.overrides || {};
+  const written = p.writeTags ? Object.values(d.overrides).filter(o => o.key).length : 0;
+  if (written) {
+    try { await writeTags(d); }
+    catch (e) {
+      renderFiles();
+      setStatus("Die Schlüssel konnten nicht ins Dokument geschrieben werden: " + e.message, true);
+      return;
+    }
+  }
+  renderFiles();
+  const said = [written ? `${written} Schlüssel ins Dokument geschrieben` : "", overrideMeta(d.overrides)]
+    .filter(Boolean).join(" · ") || "keine Abweichungen";
+  if (!written) { setStatus(`${d.name}: ${said}.`); return; }
+  // Kam die Datei über den Öffnen-Dialog herein, kennt Rust ihren Pfad: die neue
+  // Fassung geht ohne Nachfrage genau dorthin zurück. Die Oberfläche nennt dabei
+  // keinen Pfad, nur die Kennung, die sie beim Öffnen bekommen hat.
+  if (native && d.onDisk) {
+    try {
+      const name = await invoke("write_back", { id: d.id, bytes: Array.from(new Uint8Array(d.buffer)) });
+      setStatus(`${name}: ${said} — Datei überschrieben.`);
+    } catch (e) { setStatus(String(e), true); }
+    return;
+  }
+  // Ohne bekannten Pfad bleibt die Kopie: wohin sie geht, entscheidet der
+  // native Dialog in Rust.
+  setStatus(`${d.name}: ${said}.`);
+  await save({ name: d.name, blob: new Blob([d.buffer], { type: DOCX_MIME }) });
+}
+
 /* ---------- filling ---------- */
 // Die Werte kommen aus dem Formularfenster, die Dokumente bleiben hier.
 async function runFill(id, entered) {
@@ -835,6 +1006,14 @@ if (native) {
     activeId = null;
     runFill(p.id, p.values || {});
   });
+  // „Übernehmen" im Zahnrad-Fenster: dort liegen nur die Beschreibungen, das
+  // Dokument liegt hier.
+  listen("docfill://keys", async e => {
+    let p = {};
+    try { p = JSON.parse(e.payload); } catch { return; }
+    await invoke("close_keys_window").catch(() => {});
+    applyOverrides(p);
+  });
   // Öffnen/Speichern/Drucken aus dem Historie-Fenster: dort liegen nur
   // Metadaten, ausgeführt wird es hier, wo die Dokumente sind.
   listen("docfill://history-action", e => {
@@ -857,13 +1036,57 @@ async function fillDoc(d, values) {
     const xml = new DOMParser().parseFromString(await partText(zip, path), "application/xml");
     for (const sdt of Array.from(xml.getElementsByTagNameNS(W, "sdt"))) {
       const pr = sdt.getElementsByTagNameNS(W, "sdtPr")[0]; if (!pr) continue;
-      const key = sdtKey(pr, sdt, pos, d.name); pos++;
-      if (!values.has(key)) continue;
+      const { key, hidden } = keyOf(pr, sdt, pos, d.name, d.overrides); pos++;
+      // Abgewählt heißt: bleibt unangetastet — auch dann, wenn ein anderes
+      // Dokument dasselbe Feld im Formular zeigt.
+      if (hidden || !values.has(key)) continue;
       replaceSdt(xml, sdt, values.get(key));
     }
     zip.file(path, new XMLSerializer().serializeToString(xml));
   }
-  return zip.generateAsync({ type: "blob", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+  return zip.generateAsync({ type: "blob", mimeType: DOCX_MIME });
+}
+
+// Die im Zahnrad-Fenster vergebenen Schlüssel als w:tag ins Dokument schreiben.
+// Danach bringt die Vorlage sie selbst mit: `sdtKey` liefert für ein echtes Tag
+// denselben Schlüssel, den die Überschreibung erzeugt hat — die Überschreibung
+// wird also überflüssig und fällt weg.
+//
+// Gerechnet wird mit `sdtKey`, nicht mit `keyOf`: gesucht ist die Herkunft, an
+// der die Überschreibung hängt, nicht ihr Ergebnis.
+async function writeTags(d) {
+  const zip = await JSZip.loadAsync(d.buffer);
+  let pos = 0;
+  for (const path of partPaths(zip)) {
+    const xml = new DOMParser().parseFromString(await partText(zip, path), "application/xml");
+    for (const sdt of Array.from(xml.getElementsByTagNameNS(W, "sdt"))) {
+      const pr = sdt.getElementsByTagNameNS(W, "sdtPr")[0]; if (!pr) continue;
+      const o = d.overrides[sdtKey(pr, sdt, pos, d.name)]; pos++;
+      if (o && o.key) setTag(xml, pr, o.key);
+    }
+    zip.file(path, new XMLSerializer().serializeToString(xml));
+  }
+  d.buffer = await zip.generateAsync({ type: "arraybuffer" });
+  // Nur das Abwählen bleibt eine Sache der App — das lässt sich in einem .docx
+  // nicht ausdrücken. Es hängt jetzt am neuen Schlüssel: das Steuerelement
+  // trägt sein Tag, `sdtKey` gibt beim nächsten Lesen also etwas anderes zurück.
+  const left = {};
+  for (const [orig, o] of Object.entries(d.overrides)) {
+    if (o.hidden) left[o.key ? "tag:" + o.key : orig] = { hidden: true };
+  }
+  d.overrides = left;
+}
+
+// w:tag setzen. Nicht einfach anhängen: die Kinder von sdtPr sind eine Folge in
+// fester Reihenfolge — w:tag steht hinter w:alias und w:rPr und vor w:id.
+function setTag(xml, pr, value) {
+  const found = pr.getElementsByTagNameNS(W, "tag")[0];
+  if (found) { found.setAttributeNS(W, "w:val", value); return; }
+  const tag = xml.createElementNS(W, "w:tag");
+  tag.setAttributeNS(W, "w:val", value);
+  const after = pr.getElementsByTagNameNS(W, "alias")[0] || pr.getElementsByTagNameNS(W, "rPr")[0];
+  if (after) after.parentNode.insertBefore(tag, after.nextSibling);
+  else pr.insertBefore(tag, pr.firstChild);
 }
 
 // Put the text into the first run (keeping its formatting), drop the other runs, then unwrap the control.

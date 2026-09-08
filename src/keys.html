@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Felder &amp; Schlüssel</title>
+<link rel="stylesheet" href="app.css">
+<style>
+  /* Gebaut wie das Formularfenster: Kopfzeile, scrollende Liste, Fußzeile.
+     Waagerecht polstert die Liste selbst, nicht der Rumpf — nur so sitzt die
+     Bildlaufleiste am Fensterrand und nicht am Rand der 640px-Spalte. */
+  body { display:flex; flex-direction:column; padding:14px 0; gap:10px; overflow:hidden }
+  h2 { font-size:12px; font-weight:600; margin:0 14px; display:flex; align-items:baseline; gap:6px;
+       padding-bottom:9px; border-bottom:1px solid var(--line) }
+  h2 .who { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  h2 .meta { font-weight:400; color:var(--muted); margin-left:auto; flex:none }
+  #list { overflow-y:auto; flex:1; min-height:0;
+          padding-inline:max(14px, calc((100% - 640px) / 2));
+          scrollbar-width:thin; scrollbar-color:var(--field-line) transparent }
+  @supports not (scrollbar-width: thin) {
+    #list::-webkit-scrollbar { width:11px }
+    #list::-webkit-scrollbar-track { background:transparent }
+    #list::-webkit-scrollbar-thumb { background:var(--line); border-radius:999px;
+                                     border:3px solid transparent; background-clip:content-box }
+    #list:hover::-webkit-scrollbar-thumb { background:var(--field-line); background-clip:content-box }
+  }
+
+  /* Fußzeile wie im Formularfenster: gleiche Linie, gleiche Höhe. Der Schalter
+     steht über den Schaltflächen, weil er beschreibt, was „Übernehmen“ tut. */
+  footer { margin:0 14px; padding-top:9px; border-top:1px solid var(--line);
+           display:flex; flex-direction:column; gap:8px }
+  footer .row button { padding-block:7px }
+  footer .row .primary { flex:1 }
+  footer .check { color:var(--muted) }
+  .empty { color:var(--muted); display:flex; flex-direction:column; align-items:center; justify-content:center;
+           text-align:center; gap:3px; height:100%; min-height:72px; padding:12px; max-width:44ch; margin:0 auto }
+  .empty b { color:var(--ink); font-weight:600 }
+</style>
+</head>
+<body>
+<h2><span class="who" id="docName"></span><span class="meta" id="listMeta"></span></h2>
+<div id="list"></div>
+<footer>
+  <label class="check"><input type="checkbox" id="writeTags">
+    <span id="writeTagsNote">Schlüssel dauerhaft ins Dokument schreiben (w:tag)</span></label>
+  <div class="row"><span id="status" role="status" aria-live="polite"></span>
+    <button id="cancel">Abbrechen</button>
+    <button id="apply" class="primary" disabled>Übernehmen</button></div>
+</footer>
+
+<script type="module">
+// Dieses Fenster kennt das Dokument nicht, nur die Beschreibungen seiner
+// Inhaltssteuerelemente. Gelesen und geschrieben wird im Hauptfenster: die
+// Dokumentinhalte wären über die IPC-Grenze hinweg viel zu groß.
+//
+// Anders als das Formularfenster sichert es nichts nebenbei: was hier steht,
+// gilt erst mit „Übernehmen“. Ein Schlüssel, der halb eingetippt schon wirkte,
+// zerrisse die Zuordnung mitten im Tippen.
+import { invoke } from "./vendor/tauri-api.js";
+import { renderControls, collectOverrides, writeTagsLabel } from "./keys-ui.js";
+
+const $ = id => document.getElementById(id);
+function setStatus(m, err) { const s = $("status"); s.textContent = m; s.className = err ? "error" : ""; }
+
+let controls = [];
+let docId = null;   // geht unverändert zurück, damit das Hauptfenster weiß,
+                    // zu welcher Datei die Überschreibungen gehören
+
+async function load() {
+  let data;
+  try { data = JSON.parse(await invoke("keys_payload")); }
+  catch { setStatus("Die Felder konnten nicht geladen werden.", true); return; }
+
+  controls = Array.isArray(data.controls) ? data.controls : [];
+  docId = data.docId || null;
+  $("docName").textContent = data.name || "";
+  $("writeTagsNote").textContent = writeTagsLabel(data.onDisk);
+  document.title = data.name ? `Felder & Schlüssel — ${data.name}` : "Felder & Schlüssel";
+  if (!controls.length) {
+    $("list").innerHTML = `<div class="empty"><b>Keine Inhaltssteuerelemente</b>In diesem Dokument gibt es
+      nichts auszufüllen. In Word unter Entwicklertools ▸ Steuerelemente hinzufügen.</div>`;
+    $("writeTags").disabled = true;
+    return;
+  }
+  $("listMeta").textContent = `${controls.length} Steuerelement${controls.length === 1 ? "" : "e"}`;
+  renderControls($("list"), controls, data.known || []);
+  $("apply").disabled = false;
+}
+
+async function apply() {
+  if ($("apply").disabled) return;
+  $("apply").disabled = true;
+  $("apply").setAttribute("aria-busy", true);
+  setStatus("Wird übernommen…");
+  try {
+    // Das Hauptfenster trägt die Überschreibungen ein und schließt dieses Fenster.
+    await invoke("keys_submit", { payload: JSON.stringify({
+      docId, overrides: collectOverrides($("list"), controls), writeTags: $("writeTags").checked
+    }) });
+  } catch (e) {
+    setStatus(String(e), true);
+    $("apply").disabled = false;
+    $("apply").setAttribute("aria-busy", false);
+  }
+}
+// Abbrechen verwirft, was hier eingetragen wurde — dieselbe Wirkung wie das
+// Schließen über die Titelleiste.
+const cancel = () => invoke("close_keys_window").catch(() => {});
+
+$("apply").onclick = apply;
+$("cancel").onclick = cancel;
+addEventListener("keydown", e => {
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); apply(); }
+  else if (e.key === "Escape") { e.preventDefault(); cancel(); }
+});
+
+load();
+</script>
+</body>
+</html>

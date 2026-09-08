@@ -12,7 +12,9 @@ export function esc(s) {
 export function toISO(s) { const d = new Date(s); return isNaN(d) ? "" : d.toISOString().slice(0, 10); }
 export function fromISO(s) { const [y, m, d] = s.split("-"); return new Date(y, m - 1, d).toLocaleDateString("de-DE"); }
 
-const TYPE_LABEL = { text: "Text", rich: "Text", date: "Datum", dropdown: "Liste", combo: "Liste", checkbox: "" };
+// Auch von keys-ui.js benutzt: die Zahnrad-Liste nennt denselben Feldtyp
+// wie das Formular, sonst hieße dasselbe Steuerelement zweimal verschieden.
+export const TYPE_LABEL = { text: "Text", rich: "Text", date: "Datum", dropdown: "Liste", combo: "Liste", checkbox: "" };
 
 /** Bereits eingegebener Wert, sonst der Wert aus dem Dokument. */
 function initial(f, values) {

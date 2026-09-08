@@ -41,12 +41,46 @@ struct HistoryBridge {
     payload: Mutex<Option<String>>,
 }
 
+/// Field descriptions of a single document for the gear window, as opaque JSON.
+/// Same passthrough as `FormBridge`, and `shown` for the same reason: the page
+/// reads its payload once, when it loads, so another document needs another
+/// window rather than a focus call.
+#[derive(Default)]
+struct KeysBridge {
+    payload: Mutex<Option<String>>,
+    shown: Mutex<Option<String>>,
+}
+
 /// A group as it sits on disk: the folder name and the meta JSON, handed back
 /// unread. Rust stores the frontend's JSON, it does not interpret it.
 #[derive(serde::Serialize)]
 struct StoredGroup {
     id: String,
     meta: String,
+}
+
+/// Where the documents opened through the native dialog live. Only these can be
+/// written back over — a file that arrived by drag & drop or through the file
+/// input carries no path, not even inside the browser engine.
+///
+/// The webview never sees a path: it gets the handle it was given when the file
+/// was opened and names that. Entries stay for the life of the process; removing
+/// a document from the list only drops it in the frontend.
+#[derive(Default)]
+struct OriginPaths {
+    by_id: Mutex<std::collections::HashMap<String, PathBuf>>,
+    next: Mutex<u64>,
+}
+
+/// One document as it comes back from the open dialog. `oversize` marks a file
+/// that was left unread because it is past `MAX_DOC` — the name still travels so
+/// that the interface can say which one it was.
+#[derive(serde::Serialize)]
+struct PickedDoc {
+    id: String,
+    name: String,
+    bytes: Vec<u8>,
+    oversize: bool,
 }
 
 /// Label of the history window. Fixed, unlike the per-group form windows: there
@@ -92,6 +126,7 @@ fn io_error(context: &str, e: std::io::Error) -> String {
     eprintln!("docfill: {context}: {e}");
     match context {
         "write" => "Die Datei konnte nicht geschrieben werden.".into(),
+        "read" => "Die Datei konnte nicht gelesen werden.".into(),
         _ => "Der Vorgang ist fehlgeschlagen.".into(),
     }
 }
@@ -189,6 +224,23 @@ fn ask_save_path(app: &tauri::AppHandle, name: &str) -> Option<PathBuf> {
     rx.recv().ok().flatten().and_then(|p| p.into_path().ok())
 }
 
+/// Native "open" dialog. Same reason as `ask_save_path`: the paths are picked by
+/// the user and stay in Rust.
+fn ask_open_paths(app: &tauri::AppHandle) -> Vec<PathBuf> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.dialog()
+        .file()
+        .add_filter("DOCX", &["docx"])
+        .pick_files(move |picked| {
+            let _ = tx.send(picked);
+        });
+    rx.recv()
+        .ok()
+        .flatten()
+        .map(|v| v.into_iter().filter_map(|p| p.into_path().ok()).collect())
+        .unwrap_or_default()
+}
+
 fn ask_folder(app: &tauri::AppHandle, title: &str) -> Option<PathBuf> {
     let (tx, rx) = std::sync::mpsc::channel();
     app.dialog()
@@ -259,6 +311,84 @@ async fn save_all_finish(
         .map_err(|_| "Interner Fehler".to_string())?
         .take();
     Ok(dir.map(|d| d.to_string_lossy().into_owned()))
+}
+
+/// Open documents through the native dialog. Their contents go to the interface
+/// as they always did; what is new is that the path stays here, so the same file
+/// can later be written back over.
+#[tauri::command]
+async fn pick_documents(
+    app: tauri::AppHandle,
+    origins: tauri::State<'_, OriginPaths>,
+) -> Result<Vec<PickedDoc>, String> {
+    let oops = || "Interner Fehler".to_string();
+    let mut out = Vec::new();
+    for path in ask_open_paths(&app) {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let bytes = fs::read(&path).map_err(|e| io_error("read", e))?;
+        if bytes.len() > MAX_DOC {
+            out.push(PickedDoc { id: String::new(), name, bytes: Vec::new(), oversize: true });
+            continue;
+        }
+        let id = {
+            let mut n = origins.next.lock().map_err(|_| oops())?;
+            *n += 1;
+            format!("f{n}")
+        };
+        origins.by_id.lock().map_err(|_| oops())?.insert(id.clone(), path);
+        out.push(PickedDoc { id, name, bytes, oversize: false });
+    }
+    Ok(out)
+}
+
+/// Write a document back over the file it was opened from — without asking, that
+/// is the point of it. Only a handle from `pick_documents` names a path; anything
+/// else is refused, so page script cannot pick a target.
+///
+/// Written beside the file first and then renamed over it: if the write breaks
+/// off, the old version is still there in one piece. `fs::rename` replaces an
+/// existing file on both Windows and Unix.
+#[tauri::command]
+async fn write_back(
+    origins: tauri::State<'_, OriginPaths>,
+    id: String,
+    bytes: Vec<u8>,
+) -> Result<String, String> {
+    if bytes.len() > MAX_DOC {
+        return Err("Das Dokument ist zu groß.".into());
+    }
+    let path = origins
+        .by_id
+        .lock()
+        .map_err(|_| "Interner Fehler".to_string())?
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| {
+            "Zu dieser Datei ist kein Pfad bekannt: sie wurde nicht über den Öffnen-Dialog geladen."
+                .to_string()
+        })?;
+
+    write_over(&path, &bytes)?;
+    Ok(path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default())
+}
+
+/// Replace a file with new content. Written beside it first and then renamed
+/// over it, so a write that breaks off leaves the old version whole; the leftover
+/// is cleared away if the rename fails. `fs::rename` replaces an existing file on
+/// Windows as well as on Unix.
+fn write_over(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let tmp = path.with_extension("docfill-neu");
+    fs::write(&tmp, bytes).map_err(|e| io_error("write", e))?;
+    fs::rename(&tmp, path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        io_error("write", e)
+    })
 }
 
 /// Show the form window, building it the first time. The payload travels
@@ -405,6 +535,88 @@ async fn history_payload(bridge: tauri::State<'_, HistoryBridge>) -> Result<Stri
 async fn history_action(app: tauri::AppHandle, payload: String) -> Result<(), String> {
     app.emit_to("main", "docfill://history-action", payload)
         .map_err(|_| "Das Hauptfenster antwortet nicht.".to_string())
+}
+
+/// Show the gear window for one document, building it the first time. Only the
+/// descriptions of its content controls cross; the document itself stays in the
+/// main window, like the form payload.
+#[tauri::command]
+async fn open_keys_window(
+    app: tauri::AppHandle,
+    bridge: tauri::State<'_, KeysBridge>,
+    payload: String,
+    id: String,
+) -> Result<(), String> {
+    let failed = || "Das Fenster konnte nicht geöffnet werden.".to_string();
+    let oops = || "Interner Fehler".to_string();
+    *bridge.payload.lock().map_err(|_| oops())? = Some(payload);
+
+    // Ein Fenster je Dokument, damit ein offenes nicht die Steuerelemente einer
+    // anderen Datei zeigt: es liest seine Nutzlast nur beim Laden.
+    let label = format!("keys-{id}");
+    let previous = bridge.shown.lock().map_err(|_| oops())?.clone();
+    if let Some(prev) = previous {
+        if prev != label {
+            if let Some(w) = app.get_webview_window(&prev) {
+                let _ = w.close();
+            }
+        }
+    }
+    if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.unminimize();
+        return w.set_focus().map_err(|_| failed());
+    }
+    *bridge.shown.lock().map_err(|_| oops())? = Some(label.clone());
+    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App("keys.html".into()))
+        .title("Felder & Schlüssel")
+        // wie beim Formularfenster: die 640px breite Spalte plus 14px Polster
+        .inner_size(668.0, 640.0)
+        .min_inner_size(420.0, 420.0)
+        .build()
+        .map(|_| ())
+        .map_err(|_| failed())
+}
+
+/// The gear window asks for what it should display.
+#[tauri::command]
+async fn keys_payload(bridge: tauri::State<'_, KeysBridge>) -> Result<String, String> {
+    Ok(bridge
+        .payload
+        .lock()
+        .map_err(|_| "Interner Fehler".to_string())?
+        .clone()
+        .unwrap_or_else(|| "{}".into()))
+}
+
+/// "Übernehmen" in the gear window: the window only knows which control got
+/// which key, so the result goes to the main window, which holds the document
+/// and closes this window afterwards.
+#[tauri::command]
+async fn keys_submit(app: tauri::AppHandle, payload: String) -> Result<(), String> {
+    app.emit_to("main", "docfill://keys", payload)
+        .map_err(|_| "Das Hauptfenster antwortet nicht.".to_string())
+}
+
+/// Close the gear window and bring the main window back to the front.
+#[tauri::command]
+async fn close_keys_window(
+    app: tauri::AppHandle,
+    bridge: tauri::State<'_, KeysBridge>,
+) -> Result<(), String> {
+    let label = bridge
+        .shown
+        .lock()
+        .map_err(|_| "Interner Fehler".to_string())?
+        .take();
+    if let Some(l) = label {
+        if let Some(w) = app.get_webview_window(&l) {
+            let _ = w.close();
+        }
+    }
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_focus();
+    }
+    Ok(())
 }
 
 /// Close the form window and bring the main window back to the front.
@@ -712,6 +924,8 @@ pub fn run() {
         .manage(SaveTarget::default())
         .manage(FormBridge::default())
         .manage(HistoryBridge::default())
+        .manage(KeysBridge::default())
+        .manage(OriginPaths::default())
         // Mit dem Hauptfenster endet das Programm. Ohne das hier lief der
         // Prozess nach dem Schließen weiter — ohne Fenster, aber am Leben —,
         // und damit blieb der Ablageordner im Temp liegen und die Historie
@@ -741,6 +955,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             open_document,
+            pick_documents,
+            write_back,
             print_document,
             save_document,
             save_all_begin,
@@ -755,6 +971,10 @@ pub fn run() {
             open_history_window,
             history_payload,
             history_action,
+            open_keys_window,
+            keys_payload,
+            keys_submit,
+            close_keys_window,
             group_save_meta,
             group_save_doc,
             group_list,
@@ -874,6 +1094,30 @@ mod tests {
     /// nicht nachstellen; geprüft wird der Teil, der die Zusage trägt: der
     /// Ordner ist danach weg, und ein zweiter Aufruf — den es gibt, weil auch
     /// `RunEvent::Exit` aufräumt — greift ins Leere, statt zu scheitern.
+    #[test]
+    fn write_over_replaces_the_file_and_leaves_nothing_behind() {
+        let dir = std::env::temp_dir().join(format!(
+            "docfill-test-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("vorlage.docx");
+        fs::write(&file, b"alt").unwrap();
+
+        write_over(&file, b"neu mit Schluesseln").unwrap();
+
+        assert_eq!(fs::read(&file).unwrap(), b"neu mit Schluesseln");
+        // die Zwischendatei darf nicht liegen bleiben
+        assert!(!dir.join("vorlage.docfill-neu").exists());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+
+        // und noch einmal darüber, auf eine bestehende Datei
+        write_over(&file, b"noch neuer").unwrap();
+        assert_eq!(fs::read(&file).unwrap(), b"noch neuer");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn wipe_staging_removes_the_folder_and_runs_twice() {
         let _guard = staging_guard();

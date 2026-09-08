@@ -22,13 +22,15 @@ npm run build                    # Installationspakete in src-tauri/target/relea
 ## Aufbau
 - `src/index.html` — die gesamte Oberfläche (auf Deutsch). Läuft auch in einem normalen Browser; innerhalb von Tauri werden stattdessen native Dialoge, Dateizugriffe, „mit Word öffnen“ und das Drucken im Hintergrund verwendet.
 - `src/form.html` — das Formularfenster: ein zweites, echtes Fenster, das über die Kachel im Hauptfenster geöffnet wird. Es zeigt nur Felder an und schickt die Werte zurück; die Dokumente bleiben im Hauptfenster.
+- `src/keys.html` — das Zahnrad-Fenster: zeigt die Inhaltssteuerelemente **eines** Dokuments. Jedes lässt sich fürs Formular ab- und anwählen und bekommt bei Bedarf einen eigenen Schlüssel; auf Wunsch wird der Schlüssel als `w:tag` ins Dokument geschrieben. Es kennt nur Beschreibungen; gelesen und geschrieben wird im Hauptfenster.
 - `src/history.html` — das Historie-Fenster: zeigt, was in dieser Sitzung ausgefüllt wurde, nach Ausfüll-Vorgang gegliedert. Es kennt nur Namen, Größen und Zeiten; Öffnen, Speichern und Drucken führt das Hauptfenster aus.
-- `src/app.css` — Farben, Formularfelder, Schaltflächen, Statuszeile sowie Dokumentliste und Aufklappmenü, von allen drei Seiten benutzt. Muss in jeder Seite **vor** dem eigenen `<style>` eingebunden werden.
+- `src/app.css` — Farben, Formularfelder, Schaltflächen, Statuszeile sowie Dokumentliste, Aufklappmenü und die Steuerelement-Liste des Zahnrad-Fensters, von allen vier Seiten benutzt. Muss in jeder Seite **vor** dem eigenen `<style>` eingebunden werden.
 - `src/form-ui.js` — `renderFields` und `collectValues`, von Formularfenster und Ersatzdialog benutzt, damit die Darstellung nicht auseinanderläuft.
 - `src/history-ui.js` — `renderHistory` und `size`, von Historie-Fenster und Ersatzdialog benutzt.
+- `src/keys-ui.js` — `renderControls` und `collectOverrides`, von Zahnrad-Fenster und Ersatzdialog benutzt.
 - `src/menu-ui.js` — die Aufklappmenüs (Kachel-Kontextmenü, Aktionen der Dokumentzeile). Das Menü-Element bleibt in der Seite, weil es dort am `<body>` hängen muss; die Mechanik steht hier.
 - `src/vendor/` — mitgelieferte Bibliotheken, siehe unten.
-- `src-tauri/src/lib.rs` — 21 Befehle. Zum Speichern und Öffnen: `open_document`, `print_document`, `save_document`, `save_all_begin`, `save_all_write`, `save_all_finish`, `list_printers`. Sie nehmen Inhalt und Wunschnamen entgegen, nie einen Zielpfad. Für das Formularfenster: `open_form_window`, `form_payload`, `form_cache_values`, `form_submit`, `close_form_window`. Für die Historie: `history_publish`, `open_history_window`, `history_payload`, `history_action`. Für die gemerkten Formulare: `group_save_meta`, `group_save_doc`, `group_list`, `group_read_doc`, `group_delete`.
+- `src-tauri/src/lib.rs` — 27 Befehle. Zum Öffnen, Speichern und Drucken: `open_document`, `pick_documents`, `write_back`, `print_document`, `save_document`, `save_all_begin`, `save_all_write`, `save_all_finish`, `list_printers`. Sie nehmen Inhalt und Wunschnamen entgegen, nie einen Zielpfad. Für das Formularfenster: `open_form_window`, `form_payload`, `form_cache_values`, `form_submit`, `close_form_window`. Für die Historie: `history_publish`, `open_history_window`, `history_payload`, `history_action`. Für das Zahnrad-Fenster: `open_keys_window`, `keys_payload`, `keys_submit`, `close_keys_window`. Für die gemerkten Formulare: `group_save_meta`, `group_save_doc`, `group_list`, `group_read_doc`, `group_delete`.
 - `src-tauri/capabilities/default.json` — nur `core:default`; die Oberfläche hat keinen Zugriff auf Dateisystem, Dialoge oder Shell.
 
 ## Wie ein Feld in mehreren Dokumenten wiedererkannt wird
@@ -45,6 +47,15 @@ vergibt ihn, in dieser Reihenfolge:
 4. Die Position im Dokument — nur als letzte Rettung und **auf das jeweilige
    Dokument beschränkt**, damit zwei verschieden lange Dokumente an derselben
    Stelle nicht fremde Felder zusammenwerfen.
+
+Reicht das nicht — dieselbe Frage heißt in zwei Vorlagen verschieden —, vergibt
+man den Schlüssel im Zahnrad-Fenster von Hand. `keyOf()` legt diese
+Überschreibung über `sdtKey()`; sie ist immer ein `w:tag`-Wert, ergibt also genau
+den Schlüssel, den ein Dokument mit diesem Tag von sich aus bekäme. Deshalb
+verschmilzt ein überschriebenes Feld mit einem, das das Tag wirklich trägt — und
+wer den Schlüssel anschließend ins Dokument schreiben lässt, ändert am Ergebnis
+nichts. Dort abgewählte Felder überspringen Lesen und Ausfüllen gleichermaßen:
+sie erscheinen nicht im Formular und bleiben im Dokument unangetastet.
 
 Lesen (`readControls`) und Ausfüllen (`fillDoc`) rufen dieselbe Funktion auf und
 zählen die Position über alle Dokumentteile hinweg — Kopf- und Fußzeilen
@@ -98,7 +109,8 @@ Tauri-API dazu, dort exportieren und den Befehl erneut ausführen.
 - Das Formularfenster wird in Rust erzeugt, nicht im JavaScript. Damit bleibt es dabei, dass
   die Oberfläche keine Adresse nennen kann; die Berechtigung
   `core:webview:allow-create-webview-window` wird nicht vergeben.
-- Zwischen den Fenstern gehen nur Feldbeschreibungen, eingegebene Werte und — für die Historie —
+- Zwischen den Fenstern gehen nur Feldbeschreibungen, eingegebene Werte, die im Zahnrad-Fenster
+  vergebenen Schlüssel und — für die Historie —
   Namen, Größen und Zeiten hin und her, niemals Dokumentinhalte. Die bleiben im Hauptfenster.
   Auch „Öffnen“, „Speichern“ und „Drucken“ aus der Historie werden dort ausgeführt; das
   Historie-Fenster schickt nur, welche Zeile gemeint war.
@@ -107,6 +119,16 @@ Tauri-API dazu, dort exportieren und den Befehl erneut ausführen.
   gehen die Nebenfenster mit ihm zu — sonst liefe der Prozess weiter und der Ablageordner bliebe
   liegen. Über einen langen Arbeitstag verwirft sie die ältesten Läufe, sobald sie 200 MB
   überschreitet.
+- Ausgefüllte Dokumente sind immer Kopien; die Vorlage wird dabei nie angefasst. Die **einzige**
+  Ausnahme im ganzen Programm ist der Schalter „Schlüssel dauerhaft ins Dokument schreiben" im
+  Zahnrad-Fenster: er ersetzt die Vorlage ohne Nachfrage durch die Fassung mit den `w:tag`-Werten.
+  Das geht nur bei Dateien, die über den Öffnen-Dialog geladen wurden — nur zu denen kennt Rust
+  einen Pfad. Hereingezogene Dateien bringen keinen mit; für sie wird weiterhin eine Kopie über den
+  Speichern-Dialog angeboten. Der Schalter im Fenster sagt jedes Mal, welcher der beiden Fälle gilt.
+- Die Pfade der geöffneten Dateien liegen in Rust (`OriginPaths`), nicht in der Oberfläche. Die nennt
+  beim Zurückschreiben nur die Kennung, die sie beim Öffnen bekommen hat — ein anderes Ziel kann sie
+  nicht angeben. Geschrieben wird daneben und dann umbenannt (`write_over`), damit ein abgebrochener
+  Schreibvorgang die alte Fassung nicht halb zerstört.
 - Die Oberfläche kennt keine Zielpfade. Sie übergibt Inhalt und Wunschnamen; wohin
   gespeichert wird, entscheidet ein nativer Dialog innerhalb von Rust. Dateinamen werden
   dabei so bereinigt, dass sie den gewählten Ordner nicht verlassen können.
