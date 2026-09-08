@@ -106,13 +106,54 @@
   .drop kbd { display:block; margin-top:3px; font:inherit; font-size:12px; color:var(--muted) }
 
   ul { list-style:none; margin:0; padding:0 } ul:not(:empty) { flex:1 }
-  li.file { display:flex; align-items:center; gap:8px; padding:4px 6px; margin:0 -6px; border-radius:var(--r-sm);
-            transition:background var(--dur) var(--ease) }
+  /* Raster statt Flex, seit unter dem Namen der Anteilsbalken steht: so beginnt
+     die zweite Zeile am Namen und nicht am Haken. */
+  li.file { position:relative; display:grid; grid-template-columns:auto minmax(0,1fr) auto auto; align-items:center;
+            gap:2px 8px; padding:4px 6px; margin:0 -6px; border-radius:var(--r-sm);
+            transition:background var(--dur) var(--ease), opacity var(--dur) var(--ease) }
   li.file:hover { background:var(--raised) }
   li.file + li.file { box-shadow:0 -1px 0 var(--line) }
-  li.file label { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; padding:3px 0;
+  li.file label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; padding:3px 0;
                   transition:color var(--dur) var(--ease) }
   li.file:has(input:not(:checked)) label { color:var(--muted) }
+
+  /* ---- Überschneidung mit den anderen Dokumenten ----
+     Der Balken ist zweifach geschachtelt: die äußere Spur gibt das Maß vor, die
+     Länge darin steht für die Zahl der Felder (gemessen am Dokument mit den
+     meisten), und der gefüllte Teil für die Felder, die auch anderswo
+     vorkommen. Breiten werden per CSSOM gesetzt — ein style-Attribut verwürfe
+     die CSP. Die Aussage trägt der Text daneben; der Balken ist Beiwerk und
+     deshalb für Vorleseprogramme ausgeblendet. */
+  .share { grid-column:2 / -1; display:flex; align-items:center; gap:6px; min-width:0;
+           font-size:12px; color:var(--muted) }
+  .share .bar { width:64px; height:4px; flex:none; border-radius:999px; background:transparent }
+  .share .len { display:block; height:100%; border-radius:999px; background:var(--field-line);
+                transition:width var(--dur) var(--ease) }
+  .share .on { display:block; height:100%; border-radius:999px; background:var(--accent);
+               transition:width var(--dur) var(--ease) }
+  .share .meta { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  /* Zeile überfahren: die Dokumente ohne gemeinsame Felder treten zurück. So
+     sieht man nicht nur wie viel, sondern auch mit wem. */
+  li.file.dim { opacity:.35 }
+  /* ---- Zusammengehörige Dokumente ----
+     Dokumente, die sich Felder teilen — auch mittelbar über ein drittes —
+     bekommen dieselbe Farbe am linken Rand. Damit sieht man ohne Maus, welche
+     Dateien zusammen ein Formular ergeben und welche danebenstehen. Gibt es nur
+     eine einzige Gruppe, sagt die Farbe nichts und bleibt weg; das entscheidet
+     paintShare. Fünf Farben, danach von vorn: mehr wären ohnehin nicht mehr
+     auseinanderzuhalten.
+     Bernstein steht für sich: ein Dokument, das mit keinem anderen ausgewählten
+     ein Feld teilt — meist die versehentlich mitgezogene Datei. Nicht Rot,
+     falsch ist daran nichts; es fällt nur heraus. Die Aussage trägt der Text
+     daneben, der Streifen ist Beiwerk und deshalb keine Farbe allein. */
+  li.file[data-cluster]::before { content:""; position:absolute; left:0; top:4px; bottom:4px; width:3px;
+                                  border-radius:999px; background:var(--cl) }
+  li.file[data-cluster="0"] { --cl:#5fa2e0 }
+  li.file[data-cluster="1"] { --cl:#5cc48c }
+  li.file[data-cluster="2"] { --cl:#b58ce0 }
+  li.file[data-cluster="3"] { --cl:#4fbdb5 }
+  li.file[data-cluster="4"] { --cl:#e08bb4 }
+  li.file[data-cluster=allein] { --cl:var(--warn) }
   li.file .x, li.file .gear { display:grid; place-items:center; width:22px; height:22px; flex:none; padding:0; font-size:12px;
                background:none; border:0; border-radius:var(--r-sm); color:var(--muted); cursor:pointer; opacity:0;
                transition:opacity var(--dur) var(--ease), color var(--dur) var(--ease), background var(--dur) var(--ease) }
@@ -402,20 +443,158 @@ function renderFiles() {
   const ul = $("files"); ul.innerHTML = "";
   docs.forEach((d, i) => {
     const li = document.createElement("li"); li.className = "file";
+    li.dataset.id = d.id;
     const meta = overrideMeta(d.overrides);
     if (meta) li.dataset.keys = "";   // das Zahnrad bleibt dann sichtbar, siehe CSS
     li.innerHTML = `<input type="checkbox" id="d${i}" ${d.selected ? "checked" : ""}>
       <label for="d${i}" title="${esc(d.name)}">${esc(d.name)}</label>
       <button class="gear" title="Felder und Schlüssel${meta ? " — " + esc(meta) : ""}"
         aria-label="Felder und Schlüssel von ${esc(d.name)}">\u2699</button>
-      <button class="x" aria-label="${esc(d.name)} entfernen" title="Entfernen">✕</button>`;
-    li.querySelector("input").onchange = e => { d.selected = e.target.checked; updateButtons(); };
+      <button class="x" aria-label="${esc(d.name)} entfernen" title="Entfernen">✕</button>
+      <span class="share"><span class="bar" aria-hidden="true"><span class="len"><span class="on"></span></span></span>
+        <span class="meta"></span></span>`;
+    li.querySelector("input").onchange = e => {
+      d.selected = e.target.checked;
+      updateButtons();
+      // Verglichen wird nur unter den ausgewählten Dokumenten — die Zahlen
+      // ändern sich also mit. Neu gelesen wird dafür nichts.
+      computeShare(); paintShare();
+    };
     li.querySelector(".gear").onclick = () => openKeys(d);
     li.querySelector(".x").onclick = () => { docs.splice(i, 1); renderFiles(); };
     ul.appendChild(li);
   });
   updateButtons();
+  computeShare(); paintShare();
+  scanOverlap();
 }
+
+/* ---------- Überschneidung der Felder ----------
+   Wie viele Felder eines Dokuments auch in einem anderen ausgewählten vorkommen
+   — und in welchen. Bis „Formular erstellen" gedrückt ist, sagt sonst nichts
+   darüber, ob aus den Dateien ein gemeinsames Formular wird oder lauter
+   unverbundene Feldblöcke.
+
+   Gelesen wird dafür dasselbe, was auch das Formular und das Zahnrad-Fenster
+   brauchen; `controlsOf` hält es fest, damit keine Datei dreimal entpackt wird. */
+let overlapRun = 0;
+
+// Läuft neben der Oberfläche her: die Liste steht sofort, die Zahlen kommen
+// Dokument für Dokument nach. `overlapRun` verwirft einen Lauf, dessen Liste
+// sich zwischendurch geändert hat.
+async function scanOverlap() {
+  const run = ++overlapRun;
+  for (const d of docs) {
+    if (d.ctrls || d.unreadable) continue;
+    try { await controlsOf(d); }
+    catch { d.unreadable = true; }
+    if (run !== overlapRun) return;
+    computeShare(); paintShare();
+  }
+}
+
+function computeShare() {
+  const keys = new Map();   // Dokument -> Menge seiner Schlüssel
+  for (const d of docs) {
+    // Abgewählte Felder zählen nicht: sie stehen nicht im Formular.
+    if (d.ctrls) keys.set(d, new Set(d.ctrls.filter(c => !c.hidden).map(c => c.key)));
+  }
+  const on = docs.filter(d => d.selected && keys.has(d));
+  for (const d of docs) {
+    const mine = keys.get(d);
+    if (!mine) { d.share = null; continue; }
+    const partners = new Set();
+    let shared = 0;
+    for (const k of mine) {
+      let hit = false;
+      for (const o of on) if (o !== d && keys.get(o).has(k)) { partners.add(o.id); hit = true; }
+      if (hit) shared++;
+    }
+    // Ein einzelnes ausgewähltes Dokument hat nichts, womit es sich vergleichen
+    // ließe — dann steht nur die Feldzahl da.
+    d.share = { total: mine.size, shared, partners, comparable: d.selected && on.length > 1 };
+  }
+  clusterDocs(on, keys);
+}
+
+// Haben zwei Dokumente überhaupt ein Feld gemeinsam?
+function shareAny(a, b) { for (const k of a) if (b.has(k)) return true; return false; }
+
+// Zusammenhängende Gruppen: A und B gehören zusammen, wenn sie ein Feld teilen
+// — und mittelbar auch über ein drittes Dokument. Verglichen wird nur unter den
+// ausgewählten; die übrigen stehen nicht im Formular und bekommen keine Farbe.
+let clusterCount = 0;
+function clusterDocs(on, keys) {
+  docs.forEach(d => d.cluster = null);
+  const rest = new Set(on);
+  let groups = 0, colored = 0;
+  for (const d of on) {
+    if (!rest.has(d)) continue;
+    const group = [d]; rest.delete(d);
+    // Breitensuche über die noch nicht zugeordneten Dokumente; `group` wächst
+    // dabei weiter, deshalb die Zählschleife statt for…of.
+    for (let i = 0; i < group.length; i++)
+      for (const o of [...rest])
+        if (shareAny(keys.get(group[i]), keys.get(o))) { rest.delete(o); group.push(o); }
+    groups++;
+    // Ein Dokument für sich ist keine Gruppe: es bekommt keine Farbe, sondern
+    // das Warnzeichen.
+    if (group.length > 1) { const c = colored++ % 5; group.forEach(g => g.cluster = c); }
+  }
+  clusterCount = groups;
+}
+
+function shareText(s, unreadable) {
+  if (unreadable) return "nicht lesbar";
+  if (!s) return "wird gelesen…";
+  if (!s.total) return "keine Felder";
+  const n = `${s.total} Feld${s.total === 1 ? "" : "er"}`;
+  if (!s.comparable) return n;
+  return n + (s.shared === 0 ? " · nichts geteilt"
+    : s.shared === s.total ? " · alle geteilt" : ` · ${s.shared} geteilt`);
+}
+
+function paintShare() {
+  const widest = Math.max(1, ...docs.filter(d => d.share).map(d => d.share.total));
+  for (const li of $("files").querySelectorAll("li.file")) {
+    const d = docs.find(x => x.id === li.dataset.id);
+    if (!d) continue;
+    const s = d.share;
+    li.querySelector(".meta").textContent = shareText(s, d.unreadable);
+    li.querySelector(".bar").hidden = !s || !s.total;
+    // Eine einzige Gruppe heißt: alle gehören zusammen. Dann trennt die Farbe
+    // nichts und bleibt weg.
+    if (clusterCount < 2 || !s || !s.comparable) delete li.dataset.cluster;
+    else li.dataset.cluster = d.cluster === null ? "allein" : d.cluster;
+    if (!s || !s.total) continue;
+    li.querySelector(".len").style.width = Math.round(100 * s.total / widest) + "%";
+    li.querySelector(".on").style.width = Math.round(100 * s.shared / s.total) + "%";
+  }
+}
+
+// Zeile überfahren oder anspringen: die Dokumente ohne gemeinsame Felder treten
+// zurück. Einmal am <ul> verdrahtet, nicht je Zeile — die Liste wird oft neu
+// gezeichnet.
+function dimOthers(id) {
+  const d = id && docs.find(x => x.id === id);
+  const off = !d || !d.share || docs.length < 2;
+  for (const li of $("files").querySelectorAll("li.file")) {
+    li.classList.toggle("dim",
+      !off && li.dataset.id !== id && !d.share.partners.has(li.dataset.id));
+  }
+}
+$("files").addEventListener("mouseover", e => {
+  const li = e.target.closest("li.file");
+  if (li) dimOthers(li.dataset.id);
+});
+$("files").addEventListener("mouseleave", () => dimOthers(null));
+$("files").addEventListener("focusin", e => {
+  const li = e.target.closest("li.file");
+  dimOthers(li && li.dataset.id);
+});
+$("files").addEventListener("focusout", e => {
+  if (!$("files").contains(e.relatedTarget)) dimOthers(null);
+});
 function updateButtons() {
   const chosen = docs.filter(d => d.selected).length, allOn = docs.length > 0 && chosen === docs.length;
   $("docCount").textContent = docs.length ? `${chosen} von ${docs.length} ausgewählt` : "";
@@ -512,6 +691,15 @@ async function readControls(buffer, docName, overrides) {
   return found;
 }
 
+// Die Steuerelemente eines Dokuments, einmal gelesen und dann festgehalten:
+// die Überschneidungsanzeige, das Formular und das Zahnrad-Fenster brauchen
+// dieselben. Ungültig wird der Zwischenspeicher nur dort, wo sich die Schlüssel
+// ändern — in `applyOverrides`.
+async function controlsOf(d) {
+  if (!d.ctrls) d.ctrls = await readControls(d.buffer, d.name, d.overrides);
+  return d.ctrls;
+}
+
 /* ---------- Gruppen ---------- */
 // Jede Kachel ist eine eigene Gruppe: eigene Dokumente, eigene Felder, eigene
 // Antworten. Als Favorit gemerkte Gruppen liegen im Datenordner der App und
@@ -532,18 +720,24 @@ async function scanFields(list) {
   const byKey = new Map(); let n = 0, done = 0;
   for (const d of list) {
     setStatus(`Dokument ${++done} von ${list.length} wird gelesen…`);
-    const ctrls = await readControls(d.buffer, d.name, d.overrides);
+    const ctrls = await controlsOf(d);
+    // `count` zählt die Stellen, `docs` die Dokumente: steht ein Schlüssel in
+    // einer Datei zweimal, ist das eine Stelle mehr, aber kein Dokument mehr.
+    const here = new Set();
     ctrls.forEach(c => {
       if (c.hidden) return;   // im Zahnrad-Fenster abgewählt: gehört nicht ins Formular
       const key = c.key;   // gleicher Schlüssel in mehreren Dokumenten = ein Feld
+      const first = !here.has(key); here.add(key);
       if (byKey.has(key)) {
         const prev = byKey.get(key); prev.count++;
+        if (first) prev.docs++;
         if (c.current && !prev.current) prev.current = c.current;
         if (c.hint && !prev.hint) prev.hint = c.hint;
         return;
       }
       byKey.set(key, { key, tag: c.tag, title: c.title || c.tag || labelFrom(c.hint) || `Feld ${++n}`,
-                       type: c.type, options: c.options || [], current: c.current, hint: c.hint, count: 1 });
+                       type: c.type, options: c.options || [], current: c.current, hint: c.hint,
+                       count: 1, docs: 1, ofDocs: list.length });
     });
   }
   return [...byKey.values()];
@@ -840,7 +1034,7 @@ async function openKeys(d) {
   let all;
   try {
     all = [];
-    for (const x of docs) all.push({ doc: x, ctrls: await readControls(x.buffer, x.name, x.overrides) });
+    for (const x of docs) all.push({ doc: x, ctrls: await controlsOf(x) });
   } catch (e) { setStatus("Ein Dokument konnte nicht gelesen werden: " + e.message, true); return; }
   setStatus("");
 
@@ -892,6 +1086,9 @@ async function applyOverrides(p) {
   const d = docs.find(x => x.id === p.docId);
   if (!d) { setStatus("Die Datei steht nicht mehr in der Liste.", true); return; }
   d.overrides = p.overrides || {};
+  // Andere Schlüssel, andere Überschneidung — und nach `writeTags` steht das Tag
+  // im Dokument selbst, der Schlüssel wandert also auch dort.
+  d.ctrls = null; d.unreadable = false;
   const written = p.writeTags ? Object.values(d.overrides).filter(o => o.key).length : 0;
   if (written) {
     try { await writeTags(d); }

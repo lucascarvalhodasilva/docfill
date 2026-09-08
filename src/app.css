@@ -20,6 +20,7 @@
   --accent:#5fa2e0;      /* text, focus rings, selection: 5.9:1 on panels */
   --accent-solid:#3574bd; --accent-solid-hi:#2f6db5;  /* filled buttons: white at 4.8:1 */
   --ok:#5cc48c; --danger:#ef7d73;
+  --warn:#e0a75f;      /* faellt heraus, ist aber kein Fehler: das Dokument ohne gemeinsame Felder */
   --r:6px; --r-sm:4px;
   --dur:160ms; --ease:cubic-bezier(.22,1,.36,1);
 }
@@ -35,6 +36,9 @@ body { font:13px/1.45 -apple-system,"Segoe UI",system-ui,sans-serif; color:var(-
 .field { padding-block:9px } .field:first-child { padding-top:0 }
 label.t { display:block; font-weight:600; margin-bottom:3px }
 label.t .meta { font-weight:400; color:var(--muted); margin-left:6px }
+/* Im Ankreuzfeld steht die Beschriftung neben dem Kaestchen; den Abstand macht
+   dort schon das gap der Zeile. */
+.check .meta { font-weight:400; color:var(--muted) }
 input[type=text],input[type=date],select,textarea {
   width:100%; padding:6px 8px; border:1px solid var(--field-line); border-radius:var(--r-sm);
   background:var(--sunk); font:inherit; color:inherit;

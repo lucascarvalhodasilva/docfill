@@ -16,6 +16,17 @@ export function fromISO(s) { const [y, m, d] = s.split("-"); return new Date(y, 
 // wie das Formular, sonst hieße dasselbe Steuerelement zweimal verschieden.
 export const TYPE_LABEL = { text: "Text", rich: "Text", date: "Datum", dropdown: "Liste", combo: "Liste", checkbox: "" };
 
+/**
+ * In wie vielen Dokumenten der Gruppe das Feld steht. Beim Ausfüllen ist das
+ * die eigentliche Frage: schreibt dieser Wert in alle Kopien oder nur in eine?
+ * Bei einem einzigen Dokument sagt die Zeile nichts und bleibt weg — ebenso bei
+ * Formularen, die vor dieser Angabe gespeichert wurden.
+ */
+function docsText(f) {
+  if (!f.ofDocs || f.ofDocs < 2 || !f.docs) return "";
+  return f.docs >= f.ofDocs ? `in allen ${f.ofDocs} Dokumenten` : `in ${f.docs} von ${f.ofDocs} Dokumenten`;
+}
+
 /** Bereits eingegebener Wert, sonst der Wert aus dem Dokument. */
 function initial(f, values) {
   const v = values && Object.prototype.hasOwnProperty.call(values, f.key) ? values[f.key] : undefined;
@@ -34,10 +45,10 @@ export function renderFields(container, fields, values) {
     const hint = esc(f.hint || "");
     const w = document.createElement("div");
     w.className = "field";
-    const meta = [TYPE_LABEL[f.type], f.count > 1 ? `${f.count} Stellen` : ""].filter(Boolean).join(" · ");
+    const meta = [TYPE_LABEL[f.type], f.count > 1 ? `${f.count} Stellen` : "", docsText(f)].filter(Boolean).join(" · ");
     let c;
     if (f.type === "checkbox") {
-      w.innerHTML = `<label class="check"><input type="checkbox" id="${id}" data-key="${key}" ${/☒|☑/.test(cur) ? "checked" : ""}> ${esc(f.title)}</label>`;
+      w.innerHTML = `<label class="check"><input type="checkbox" id="${id}" data-key="${key}" ${/☒|☑/.test(cur) ? "checked" : ""}> ${esc(f.title)}${meta ? `<span class="meta">${esc(meta)}</span>` : ""}</label>`;
     } else {
       if (f.type === "date") c = `<input type="date" id="${id}" data-key="${key}" value="${toISO(cur)}">`;
       else if (f.type === "dropdown") c = `<select id="${id}" data-key="${key}"><option value="">— auswählen —</option>${f.options.map(o => `<option ${o === cur ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`;
