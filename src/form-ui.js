@@ -14,7 +14,7 @@ export function fromISO(s) { const [y, m, d] = s.split("-"); return new Date(y, 
 
 // Auch von keys-ui.js benutzt: die Zahnrad-Liste nennt denselben Feldtyp
 // wie das Formular, sonst hieße dasselbe Steuerelement zweimal verschieden.
-export const TYPE_LABEL = { text: "Text", rich: "Text", date: "Datum", dropdown: "Liste", combo: "Liste", checkbox: "" };
+export const TYPE_LABEL = { text: "Text", rich: "Text", date: "Datum", dropdown: "Liste", combo: "Liste", checkbox: "", picture: "Unterschrift" };
 
 /**
  * In wie vielen Dokumenten der Gruppe das Feld steht. Beim Ausfüllen ist das

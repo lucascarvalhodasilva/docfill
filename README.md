@@ -29,8 +29,9 @@ npm run build                    # Installationspakete in src-tauri/target/relea
 - `src/history-ui.js` — `renderHistory` und `size`, von Historie-Fenster und Ersatzdialog benutzt.
 - `src/keys-ui.js` — `renderControls` und `collectOverrides`, von Zahnrad-Fenster und Ersatzdialog benutzt.
 - `src/menu-ui.js` — die Aufklappmenüs (Kachel-Kontextmenü, Aktionen der Dokumentzeile). Das Menü-Element bleibt in der Seite, weil es dort am `<body>` hängen muss; die Mechanik steht hier.
+- `src/sign.html` — die Unterschriftsseite für das Tablet. Sie ist die einzige Seite, die **nicht** im Webview läuft, sondern in Safari auf einem fremden Gerät: sie wird vom kleinen Server in `lib.rs` ausgeliefert und bringt Stil und Skript deshalb vollständig selbst mit — sie kann nichts nachladen. Sie liegt trotzdem in `src/`, damit `scripts/check.mjs` sie mitprüft.
 - `src/vendor/` — mitgelieferte Bibliotheken, siehe unten.
-- `src-tauri/src/lib.rs` — 27 Befehle. Zum Öffnen, Speichern und Drucken: `open_document`, `pick_documents`, `write_back`, `print_document`, `save_document`, `save_all_begin`, `save_all_write`, `save_all_finish`, `list_printers`. Sie nehmen Inhalt und Wunschnamen entgegen, nie einen Zielpfad. Für das Formularfenster: `open_form_window`, `form_payload`, `form_cache_values`, `form_submit`, `close_form_window`. Für die Historie: `history_publish`, `open_history_window`, `history_payload`, `history_action`. Für das Zahnrad-Fenster: `open_keys_window`, `keys_payload`, `keys_submit`, `close_keys_window`. Für die gemerkten Formulare: `group_save_meta`, `group_save_doc`, `group_list`, `group_read_doc`, `group_delete`.
+- `src-tauri/src/lib.rs` — 30 Befehle. Zum Öffnen, Speichern und Drucken: `open_document`, `pick_documents`, `write_back`, `print_document`, `save_document`, `save_all_begin`, `save_all_write`, `save_all_finish`, `list_printers`. Sie nehmen Inhalt und Wunschnamen entgegen, nie einen Zielpfad. Für das Formularfenster: `open_form_window`, `form_payload`, `form_cache_values`, `form_submit`, `close_form_window`. Für die Historie: `history_publish`, `open_history_window`, `history_payload`, `history_action`. Für das Zahnrad-Fenster: `open_keys_window`, `keys_payload`, `keys_submit`, `close_keys_window`. Für die gemerkten Formulare: `group_save_meta`, `group_save_doc`, `group_list`, `group_read_doc`, `group_delete`. Für die Unterschrift vom Tablet: `sign_begin`, `sign_cancel`, `sign_qr`.
 - `src-tauri/capabilities/default.json` — nur `core:default`; die Oberfläche hat keinen Zugriff auf Dateisystem, Dialoge oder Shell.
 
 ## Wie ein Feld in mehreren Dokumenten wiedererkannt wird
@@ -138,4 +139,35 @@ Tauri-API dazu, dort exportieren und den Befehl erneut ausführen.
   gehalten; die Dokumente gehen einzeln hinüber, nie alle gleichzeitig.
 - Die Vorschau im Browser rendert fremde Dokumentinhalte in einem `sandbox`-iframe
   ohne Skriptrechte.
+
+### Unterschrift vom Tablet
+- Der Server läuft **nur im lokalen Netz** und **nur**, solange der Dialog offen ist. Es gibt
+  keinen Tunnel und keinen fremden Anbieter. Gestartet wird er erst beim ersten
+  „Unterschreiben lassen" — wer das Feature nie benutzt, bindet nie einen Port, und die
+  Firewall-Abfrage des Betriebssystems kommt an der Stelle, an der sie sich erklärt.
+- **Das Dokument verlässt den Rechner nicht.** Ausgeliefert wird ausschließlich die eine
+  einkompilierte Unterschriftsseite; der Server kennt keinen Pfad aus der Anfrage und kann
+  strukturell nichts anderes herausgeben. Hinaus geht der Dateiname, herein kommt ein Bild.
+- Der Link trägt ein Zeichen aus 128 Bit vom Zufallsgenerator des Browsers, gilt zehn Minuten
+  und ist nach der ersten Unterschrift verbraucht. Alles andere — falsches Zeichen, abgelaufen,
+  bereits benutzt — bekommt dieselbe nichtssagende Antwort. Nach zwanzig Fehlgriffen ist die
+  Sitzung zu, damit niemand im selben WLAN in Ruhe raten kann.
+- Die Verbindung ist unverschlüsselt. Das ist eine bewusste Entscheidung: über den Draht gehen
+  nur der Dateiname und das Unterschriftsbild, nie der Vertrag. TLS bräuchte im lokalen Netz ein
+  Zertifikat, dem das Tablet traut; ein selbstsigniertes erzeugt nur eine Warnung, die weggeklickt
+  wird und damit gar nichts mehr schützt.
+- Neben dem Bild legt Docfill einen Beleg als `docfill/unterschrift.json` ins Dokument:
+  Prüfsumme der unterschriebenen Fassung, Zeitpunkt und der aufgezeichnete Schreibvorgang.
+  Die Prüfsumme ist das Einzige, was eine spätere Änderung erkennbar macht. **Rechtlich** ist das
+  eine einfache elektronische Signatur — sie genügt der gesetzlichen Schriftform nach § 126 BGB
+  nicht, und wo die elektronische Form ausgeschlossen ist (Kündigung § 623 BGB, Bürgschaft
+  § 766 BGB), hilft sie gar nicht.
+- Die aufgezeichneten Schreibdaten sind personenbezogen. Die Unterschriftsseite sagt das
+  ungefragt, bevor unterschrieben wird.
+
+**Beim Entwickeln beachten:** `src/sign.html` wird über `include_str!` zur Übersetzungszeit ins
+Programm eingebacken — sie muss ja auf einem fremden Gerät ankommen, ohne dass Docfill dort
+Dateien nachliest. Eine Änderung daran wirkt deshalb **erst nach einem Rust-Neubau**, und
+`tauri dev` beobachtet nur `src-tauri`. Also `npm run dev` neu starten. Die übrigen Seiten in
+`src/` genügt es im Fenster neu zu laden.
 - Die zugehörigen Tests laufen mit `cd src-tauri && cargo test`.

@@ -277,6 +277,7 @@
   <button type="button" role="menuitem" data-a="open">Öffnen</button>
   <button type="button" role="menuitem" data-a="save">Speichern</button>
   <button type="button" role="menuitem" data-a="print">Drucken</button>
+  <button type="button" role="menuitem" data-a="sign">Unterschreiben lassen…</button>
 </div>
 
 <dialog id="renameDlg" class="small">
@@ -295,6 +296,17 @@
     <select id="printerSel"></select>
   </div>
   <div class="bar foot"><button id="printCancel">Abbrechen</button><button id="printOk" class="primary">Drucken</button></div>
+</dialog>
+
+<dialog id="signDlg" class="small">
+  <div class="bar"><b>Unterschreiben lassen</b><span id="signName" class="meta"></span></div>
+  <div class="body sign">
+    <img id="signQr" alt="QR-Code zur Unterschriftsseite" width="240" height="240">
+    <p class="t">Mit der Kamera des Tablets scannen. Der Link gilt einmal.</p>
+    <p id="signUrl" class="meta"></p>
+    <p id="signState" class="meta"></p>
+  </div>
+  <div class="bar foot"><button id="signCancel">Abbrechen</button></div>
 </dialog>
 
 <dialog id="confirmDlg" class="small">
@@ -338,6 +350,13 @@ import { renderControls, collectOverrides, overrideMeta, writeTagsLabel } from "
 import { renderHistory, size } from "./history-ui.js";
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const W14 = "http://schemas.microsoft.com/office/word/2010/wordml";
+// Für die Unterschrift: DrawingML, die Beziehungen eines Teils und die
+// Typenliste des Pakets.
+const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+const WP = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing";
+const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const PKG = "http://schemas.openxmlformats.org/package/2006/relationships";
+const CT = "http://schemas.openxmlformats.org/package/2006/content-types";
 const $ = id => document.getElementById(id);
 const native = typeof window.__TAURI_INTERNALS__ !== "undefined";  // inside the Tauri shell?
 
@@ -673,7 +692,12 @@ async function readControls(buffer, docName, overrides) {
       const val = n => { const e = pr.getElementsByTagNameNS(W, n)[0]; return e ? e.getAttributeNS(W, "val") : ""; };
       const has = n => pr.getElementsByTagNameNS(W, n).length > 0;
       let type = "text", options = [];
-      if (has("date")) type = "date";
+      // Ein Bild-Inhaltssteuerelement ist die Stelle, an die später die
+      // Unterschrift kommt. Es wird nicht getippt, gehört also nicht ins
+      // Formular — die Prüfung steht zuerst, weil ein Bildfeld sonst als
+      // leeres Textfeld durchginge.
+      if (has("picture")) type = "picture";
+      else if (has("date")) type = "date";
       else if (has("dropDownList") || has("comboBox")) {
         type = has("dropDownList") ? "dropdown" : "combo";
         options = Array.from(pr.getElementsByTagNameNS(W, "listItem")).map(li => li.getAttributeNS(W, "displayText") || li.getAttributeNS(W, "value"));
@@ -726,6 +750,7 @@ async function scanFields(list) {
     const here = new Set();
     ctrls.forEach(c => {
       if (c.hidden) return;   // im Zahnrad-Fenster abgewählt: gehört nicht ins Formular
+      if (c.type === "picture") return;   // Unterschriftsfeld, wird nicht getippt
       const key = c.key;   // gleicher Schlüssel in mehreren Dokumenten = ein Feld
       const first = !here.has(key); here.add(key);
       if (byKey.has(key)) {
@@ -834,12 +859,20 @@ const resultMenu = defineMenu($("resultMenu"), (a, r) => {
   if (a === "open") openPreview(r);
   else if (a === "save") save(r);
   else if (a === "print") print(r);
+  else if (a === "sign") startSigning(r);
 });
 // `find` liefert die auslösende Schaltfläche neu, falls die Liste inzwischen
 // neu gezeichnet wurde.
 function openResultMenu(btn, r, find) {
   // zweiter Klick auf dieselbe Schaltfläche klappt wieder zu
   if (menuOpenFor(r)) { closeMenu(true); return; }
+  // Ohne Bildfeld gibt es nichts zu unterschreiben, und ohne Tauri keinen
+  // Server. Der Eintrag bleibt sichtbar, damit erklärt werden kann, warum.
+  const sb = resultMenu.el.querySelector("[data-a=sign]");
+  sb.disabled = !native || !r.signTargets;
+  sb.title = !native ? "Nur in der App"
+    : !r.signTargets ? "In diesem Dokument ist kein Unterschriftsfeld"
+    : "";
   const b = btn.getBoundingClientRect();
   openMenu(resultMenu, b.right, b.bottom + 4, { arg: r, right: true, trigger: find });
 }
@@ -1132,7 +1165,13 @@ async function runFill(id, entered) {
     for (const d of g.docs) {
       setStatus(`Dokument ${++done} von ${g.docs.length} wird ausgefüllt…`);
       const blob = await fillDoc(d, values);
-      results.push({ name: d.name.replace(/\.docx$/i, "") + "_ausgefuellt.docx", blob });
+      // Die Steuerelemente liegen schon gelesen bereit; daraus ergibt sich, ob
+      // „Unterschreiben lassen" für dieses Ergebnis überhaupt etwas zu tun hat.
+      const ctrls = await controlsOf(d);
+      results.push({
+        name: d.name.replace(/\.docx$/i, "") + "_ausgefuellt.docx", blob,
+        signTargets: ctrls.filter(c => c.type === "picture").length,
+      });
     }
     if (results.length) addHistoryRun(g.name, results);
     renderResults(); setStatus(`${results.length} Dokument${results.length === 1 ? "" : "e"} ausgefüllt.`);
@@ -1211,6 +1250,17 @@ if (native) {
     await invoke("close_keys_window").catch(() => {});
     applyOverrides(p);
   });
+  // Die Unterschrift vom Tablet. Rust reicht den Rumpf unbesehen durch; die
+  // Form kennt nur diese Seite und src/sign.html.
+  listen("docfill://signature", async e => {
+    const r = signTarget;   // vor dem Schließen merken, das setzt ihn zurück
+    clearInterval(signTimer);
+    $("signDlg").close();
+    if (!r) return;
+    let p = {};
+    try { p = JSON.parse(e.payload); } catch { setStatus("Die Unterschrift kam unlesbar an.", true); return; }
+    await applySignature(r, p);
+  });
   // Öffnen/Speichern/Drucken aus dem Historie-Fenster: dort liegen nur
   // Metadaten, ausgeführt wird es hier, wo die Dokumente sind.
   listen("docfill://history-action", e => {
@@ -1242,6 +1292,158 @@ async function fillDoc(d, values) {
     zip.file(path, new XMLSerializer().serializeToString(xml));
   }
   return zip.generateAsync({ type: "blob", mimeType: DOCX_MIME });
+}
+
+/* ---------- Unterschrift ins Dokument setzen ----------
+   Gearbeitet wird mit dem Bild-Inhaltssteuerelement, das die Vorlage schon
+   mitbringt: darin steckt ein vollständiges w:drawing samt Platzhalterbild.
+   Es muss also keins gebaut, sondern nur umgehängt werden — das erspart uns
+   das fehleranfällige Zusammensetzen von DrawingML von Hand. */
+
+// Beziehungen sind teil-lokal: word/document.xml hat word/_rels/document.xml.rels,
+// word/header1.xml hat word/_rels/header1.xml.rels. Eine rId der Kopfzeile hat
+// mit der gleichnamigen im Hauptteil nichts zu tun.
+const relsPathOf = part => part.replace(/([^/]+)$/, "_rels/$1.rels");
+
+// Kopf- und Fußzeilen haben oft gar keine .rels-Datei, wenn sie bisher keine
+// Beziehung brauchten. Dann wird eine angelegt; einen Eintrag in
+// [Content_Types].xml braucht sie nicht, „rels" steht dort immer schon.
+async function relsOf(zip, part) {
+  const path = relsPathOf(part);
+  const leer = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="${PKG}"/>`;
+  const text = zip.file(path) ? await partText(zip, path) : leer;
+  return { path, xml: new DOMParser().parseFromString(text, "application/xml") };
+}
+
+// Höchste vorhandene Nummer plus eins, nicht die Anzahl: gelöschte Beziehungen
+// hinterlassen Lücken, und eine doppelte Id macht das Paket ungültig.
+function freeRid(rels) {
+  let max = 0;
+  for (const rel of Array.from(rels.documentElement.children)) {
+    const m = /^rId(\d+)$/.exec(rel.getAttribute("Id") || "");
+    if (m) max = Math.max(max, +m[1]);
+  }
+  return "rId" + (max + 1);
+}
+
+function addRel(rels, rid, ziel) {
+  const rel = rels.createElementNS(PKG, "Relationship");
+  rel.setAttribute("Id", rid);
+  rel.setAttribute("Type", R + "/image");
+  // Das Ziel steht relativ zum Ordner des Teils — für document.xml und für
+  // header1.xml gleichermaßen „media/…", weil beide in word/ liegen.
+  rel.setAttribute("Target", ziel);
+  rels.documentElement.appendChild(rel);
+}
+
+// Ohne diesen Eintrag kennt das Paket den Dateityp nicht und Word bietet an,
+// das Dokument zu reparieren. Er fehlt, sobald die Vorlage bisher kein PNG hatte.
+async function ensurePng(zip) {
+  const path = "[Content_Types].xml";   // die eckigen Klammern gehören zum Namen
+  const xml = new DOMParser().parseFromString(await partText(zip, path), "application/xml");
+  const da = Array.from(xml.documentElement.children).some(e =>
+    e.localName === "Default" && (e.getAttribute("Extension") || "").toLowerCase() === "png");
+  if (da) return;
+  const d = xml.createElementNS(CT, "Default");
+  d.setAttribute("Extension", "png");
+  d.setAttribute("ContentType", "image/png");
+  // Im Schema stehen alle <Default> vor allen <Override>.
+  xml.documentElement.insertBefore(d, xml.documentElement.firstChild);
+  zip.file(path, new XMLSerializer().serializeToString(xml));
+}
+
+// Breite und Höhe aus dem IHDR-Kopf. Gebraucht wird davon nur das
+// Seitenverhältnis: die Zahlen sind Gerätepixel, bei einem Tablet mit doppelter
+// Auflösung also doppelt so groß wie die Unterschrift gemeint ist.
+function pngSize(bytes) {
+  const sig = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (bytes.length < 24 || sig.some((b, i) => bytes[i] !== b)) throw new Error("Das ist kein PNG.");
+  const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return { w: v.getUint32(16), h: v.getUint32(20) };
+}
+
+// Das Platzhalterbild gegen die Unterschrift tauschen.
+function swapPicture(sdt, rid, png) {
+  const blip = sdt.getElementsByTagNameNS(A, "blip")[0];
+  if (!blip) return false;
+  blip.setAttributeNS(R, "r:embed", rid);
+
+  // Ein Zuschnitt des alten Bildes gehörte zu einem anderen Motiv und würde
+  // die Unterschrift beschneiden.
+  Array.from(sdt.getElementsByTagNameNS(A, "srcRect")).forEach(e => e.parentNode.removeChild(e));
+
+  // Die Unterschrift wird in den Rahmen der Vorlage eingepasst: sie behält ihr
+  // Seitenverhältnis und wird in keiner Richtung größer als der Platzhalter.
+  //
+  // Nicht einfach die Breite behalten und die Höhe nachziehen — bei einem
+  // flachen Unterschriftsfeld (5 cm auf 1 cm ist üblich) würde die Unterschrift
+  // sonst doppelt so hoch wie vorgesehen und schöbe die Zeile auseinander. Wer
+  // sie größer will, macht den Platzhalter in Word größer.
+  //
+  // wp:extent und pic:spPr/a:ext müssen übereinstimmen, sonst verzerrt Word.
+  const ext = sdt.getElementsByTagNameNS(WP, "extent")[0];
+  if (ext) {
+    const { w, h } = pngSize(png);
+    const rx = +ext.getAttribute("cx"), ry = +ext.getAttribute("cy");
+    if (rx > 0 && ry > 0 && w > 0 && h > 0) {
+      const faktor = Math.min(rx / w, ry / h);
+      const cx = Math.max(1, Math.round(w * faktor));
+      const cy = Math.max(1, Math.round(h * faktor));
+      ext.setAttribute("cx", String(cx));
+      ext.setAttribute("cy", String(cy));
+      const ax = sdt.getElementsByTagNameNS(A, "ext")[0];
+      if (ax) { ax.setAttribute("cx", String(cx)); ax.setAttribute("cy", String(cy)); }
+    }
+  }
+
+  // Ohne das zeigt Word das Feld weiter als leeren Platzhalter an.
+  const pr = sdt.getElementsByTagNameNS(W, "sdtPr")[0];
+  if (pr) Array.from(pr.getElementsByTagNameNS(W, "showingPlcHdr")).forEach(e => e.parentNode.removeChild(e));
+  return true;
+}
+
+/**
+ * Setzt die Unterschrift in jedes Bild-Inhaltssteuerelement des Dokuments.
+ * @returns {Promise<{blob: Blob, stellen: number}|null>} null, wenn es keine Stelle gibt.
+ */
+async function insertSignature(quelle, png, beleg) {
+  const zip = await JSZip.loadAsync(await quelle.arrayBuffer());
+  // Ein Medienteil für alle Stellen; mehrere Beziehungen dürfen auf dieselbe
+  // Datei zeigen. Der Name darf nichts Vorhandenes überschreiben — Word
+  // verwendet ein Platzhalterbild oft an mehreren Stellen wieder, und das wäre
+  // dann still auch das Logo im Briefkopf.
+  let n = 1;
+  while (zip.file(`word/media/unterschrift${n}.png`)) n++;
+  const datei = `unterschrift${n}.png`;
+  let stellen = 0;
+
+  for (const path of partPaths(zip)) {
+    const xml = new DOMParser().parseFromString(await partText(zip, path), "application/xml");
+    const felder = Array.from(xml.getElementsByTagNameNS(W, "sdt")).filter(sdt => {
+      const pr = sdt.getElementsByTagNameNS(W, "sdtPr")[0];
+      return pr && pr.getElementsByTagNameNS(W, "picture").length;
+    });
+    if (!felder.length) continue;
+
+    const rels = await relsOf(zip, path);
+    const rid = freeRid(rels.xml);
+    addRel(rels.xml, rid, "media/" + datei);
+    let hier = 0;
+    felder.forEach(sdt => { if (swapPicture(sdt, rid, png)) hier++; });
+    if (!hier) continue;
+    stellen += hier;
+    zip.file(rels.path, new XMLSerializer().serializeToString(rels.xml));
+    zip.file(path, new XMLSerializer().serializeToString(xml));
+  }
+  if (!stellen) return null;
+
+  zip.file("word/media/" + datei, png);
+  await ensurePng(zip);
+  // Der Beleg liegt als eigener Eintrag im Paket. Word übergeht unbekannte
+  // Einträge; für einen Streitfall steht der Nachweis damit im selben Dokument
+  // wie die Unterschrift, und nicht in einer Datei daneben, die verlorengeht.
+  if (beleg) zip.file("docfill/unterschrift.json", beleg);
+  return { blob: await zip.generateAsync({ type: "blob", mimeType: DOCX_MIME }), stellen };
 }
 
 // Die im Zahnrad-Fenster vergebenen Schlüssel als w:tag ins Dokument schreiben.
@@ -1306,13 +1508,128 @@ function replaceSdt(xml, sdt, text) {
   parent.removeChild(sdt);
 }
 
+/* ---------- Unterschrift vom Tablet ----------
+   Der Klient unterschreibt im selben Raum auf dem Tablet. Docfill startet dafür
+   einen Server im lokalen Netz, zeigt einen QR-Code und wartet. Hinaus geht nur
+   der Dateiname — das Dokument bleibt hier. */
+
+const SIGN_SECONDS = 10 * 60;   // dieselbe Frist wie SIGN_TTL in lib.rs
+let signTarget = null, signTimer = null;
+
+// 128 Bit aus dem Zufallsgenerator des Browsers. Ausdrücklich nicht aus der
+// Uhrzeit: dieses Zeichen ist das Einzige, was den Link im WLAN schützt.
+const signToken = () => Array.from(crypto.getRandomValues(new Uint8Array(16)))
+  .map(b => b.toString(16).padStart(2, "0")).join("");
+
+async function startSigning(r) {
+  signTarget = r;
+  $("signName").textContent = r.name;
+  $("signQr").removeAttribute("src");
+  $("signUrl").textContent = "";
+  signSay("Der Server wird gestartet…");
+  $("signDlg").showModal();
+  try {
+    const url = await invoke("sign_begin", { token: signToken(), doc: r.name });
+    // Der QR-Code kommt als SVG aus Rust; als data:-Adresse deckt ihn die
+    // vorhandene CSP über `img-src 'self' data: blob:` bereits ab.
+    $("signQr").src = "data:image/svg+xml," + encodeURIComponent(await invoke("sign_qr", { url }));
+    $("signUrl").textContent = url;
+    signCountdown(SIGN_SECONDS);
+  } catch (e) {
+    signSay(String(e && e.message ? e.message : e), true);
+  }
+}
+
+function signSay(text, schlimm) {
+  $("signState").textContent = text;
+  $("signState").className = schlimm ? "meta error" : "meta";
+}
+
+function signCountdown(rest) {
+  clearInterval(signTimer);
+  const tick = () => {
+    if (rest <= 0) {
+      clearInterval(signTimer);
+      invoke("sign_cancel").catch(() => {});
+      signSay("Das Tablet hat sich nicht gemeldet. Hängen beide Geräte im selben WLAN? "
+        + "Beim ersten Mal fragt das Betriebssystem außerdem nach dem Netzwerkzugang.", true);
+      return;
+    }
+    const m = Math.floor(rest / 60), sek = rest % 60;
+    signSay(`Warte auf das Tablet… noch ${m}:${String(sek).padStart(2, "0")}`);
+    rest--;
+  };
+  tick();
+  signTimer = setInterval(tick, 1000);
+}
+
+$("signCancel").onclick = () => $("signDlg").close();
+// Fängt auch die Esc-Taste. Der Server geht in jedem Fall aus — ein Link, der
+// den Dialog überlebt, wäre genau das, was hier niemand will.
+$("signDlg").addEventListener("close", () => {
+  clearInterval(signTimer);
+  signTarget = null;
+  if (native) invoke("sign_cancel").catch(() => {});
+});
+
+function dataUrlBytes(url) {
+  const komma = String(url || "").indexOf(",");
+  if (komma < 0) throw new Error("Die Unterschrift kam unlesbar an.");
+  const roh = atob(url.slice(komma + 1));
+  const out = new Uint8Array(roh.length);
+  for (let i = 0; i < roh.length; i++) out[i] = roh.charCodeAt(i);
+  return out;
+}
+
+// Prüfsumme der Fassung, die unterschrieben wurde. Sie ist das Einzige, was
+// eine spätere Änderung am Dokument überhaupt erkennbar macht — ein Bild allein
+// leistet das nicht.
+async function sha256Hex(buffer) {
+  if (!crypto.subtle) return "";
+  const roh = new Uint8Array(await crypto.subtle.digest("SHA-256", buffer));
+  return Array.from(roh).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function applySignature(r, p) {
+  try {
+    const png = dataUrlBytes(p.png);
+    const alt = r.blob;
+    const beleg = JSON.stringify({
+      dokument: r.name,
+      verfahren: "sha256",
+      summe: await sha256Hex(await alt.arrayBuffer()),
+      unterschrieben: new Date(p.at || Date.now()).toISOString(),
+      geraet: p.geraet || "",
+      dpr: p.dpr || 1,
+      striche: p.striche || [],
+    }, null, 2);
+    const neu = await insertSignature(alt, png, beleg);
+    if (!neu) throw new Error("Im Dokument ist keine Unterschriftstelle.");
+    // Die unsignierte Fassung bleibt über die Historie erreichbar, falls die
+    // Unterschrift misslungen ist. Ein neues Objekt, nicht `r` selbst — sonst
+    // zöge das Ersetzen weiter unten den Historie-Eintrag mit.
+    addHistoryRun("Vor der Unterschrift", [{ name: r.name, blob: alt }]);
+    r.blob = neu.blob;
+    // Trägt das Abzeichen in der Ergebnisliste und hält den Zeitpunkt fest.
+    // Der Eintrag behält seinen Namen — ohne diese Kennzeichnung sähe man einer
+    // Zeile nicht an, ob die Unterschrift schon drin ist.
+    r.signed = p.at || Date.now();
+    renderResults();
+    setStatus(`${r.name}: unterschrieben (${neu.stellen} Stelle${neu.stellen === 1 ? "" : "n"}).`);
+  } catch (e) {
+    setStatus("Die Unterschrift konnte nicht eingesetzt werden: " + e.message, true);
+  }
+}
+
 /* ---------- results: open / save / print ---------- */
 function renderResults() {
   const box = $("results"); box.innerHTML = ""; box.className = "results";
   results.forEach((r, i) => {
     const div = document.createElement("div"); div.className = "result";
     div.style.animationDelay = Math.min(i, 6) * 25 + "ms";
-    div.innerHTML = `<span class="name" title="${esc(r.name)}">${esc(r.name)}</span><span class="size">${size(r.blob.size)}</span>
+    div.innerHTML = `<span class="name" title="${esc(r.name)}">${esc(r.name)}</span>${
+      r.signed ? `<span class="badge" title="Am ${new Date(r.signed).toLocaleString("de-DE")} unterschrieben">unterschrieben</span>` : ""
+      }<span class="size">${size(r.blob.size)}</span>
       <button class="menu-btn" data-i="${i}" aria-haspopup="menu" aria-expanded="false" aria-controls="resultMenu"
         aria-label="Aktionen für ${esc(r.name)}">Aktionen<span class="caret" aria-hidden="true"></span></button>
       <button class="x" data-a="del" title="Aus der Liste entfernen" aria-label="${esc(r.name)} aus der Liste entfernen">✕</button>`;

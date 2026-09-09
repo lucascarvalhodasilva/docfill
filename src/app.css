@@ -89,6 +89,12 @@ button.link:disabled { opacity:.4; cursor:default }
 .result + .result { box-shadow:0 -1px 0 var(--line) }
 .result .name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
 .result .size { color:var(--muted); font-variant-numeric:tabular-nums; flex:none }
+/* Unterschrieben: das Ergebnis behält seinen Namen, deshalb braucht die Zeile
+   ein Zeichen dafür. Zurückhaltend gefüllt statt umrandet — es ist eine
+   Feststellung, keine Schaltfläche. */
+.result .badge { flex:none; font-size:11px; line-height:1; padding:3px 7px; border-radius:999px;
+                 color:var(--ok); background:color-mix(in srgb, var(--ok) 16%, transparent) }
+.result .badge::before { content:"✓ " }
 .result .x { display:grid; place-items:center; width:26px; height:26px; flex:none; padding:0; font-size:12px;
              background:none; border:0; border-radius:var(--r-sm); color:var(--muted); cursor:pointer;
              transition:color var(--dur) var(--ease), background var(--dur) var(--ease) }
@@ -184,3 +190,10 @@ button.link:disabled { opacity:.4; cursor:default }
 .ctrl .meta { grid-column:2; justify-self:end; align-self:center; color:var(--muted); flex:none }
 .ctrl .k { grid-column:1 / -1; font-size:12px; color:var(--muted) }
 .ctrl input[data-k=key] { grid-column:1 / -1 }
+
+/* Der Unterschrifts-Dialog: der QR-Code steht mittig, die Adresse darunter
+   klein und umbrechend — sie ist lang und wird nur zur Not abgetippt. */
+.body.sign { text-align:center }
+.body.sign img { display:block; margin:0 auto 10px; width:240px; height:240px;
+                 background:#fff; border-radius:8px; padding:8px }
+.body.sign #signUrl { word-break:break-all; font-size:12px }

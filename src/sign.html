@@ -1,0 +1,313 @@
+<!-- Die Seite, die der Klient auf dem Tablet sieht.
+
+     Sie läuft in Safari, nicht im Webview, und wird vom kleinen Server aus
+     lib.rs ausgeliefert — als einzige Adresse. Deshalb steht hier alles
+     beieinander: kein Stylesheet, kein Modul, kein Bild von außen. Was hier
+     nicht drinsteht, kann sie nicht laden.
+
+     `{{DOKUMENT}}` setzt Rust beim Ausliefern ein. Wohin die Unterschrift geht,
+     nimmt die Seite aus ihrer eigenen Adresse. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Unterschrift</title>
+<style>
+  :root {
+    --grund: #f6f6f4;
+    --karte: #fff;
+    --rand: #d8d8d2;
+    --text: #1b1b19;
+    --leise: #6a6a63;
+    --ton: #2f6f4f;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--grund); color: var(--text);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    display: flex; flex-direction: column;
+    padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
+    /* Auf dem Tablet soll die Seite stehen bleiben, nicht unter dem Stift
+       wegscrollen. `user-scalable=no` allein reicht nicht, das übergeht iOS. */
+    touch-action: none;
+    overscroll-behavior: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none;
+  }
+  header { flex: 0 0 auto; padding-bottom: 12px; }
+  h1 { margin: 0; font-size: 17px; font-weight: 600; }
+  .doc { margin: 2px 0 0; color: var(--leise); font-size: 14px; word-break: break-word; }
+
+  main { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+  .feld {
+    position: relative; flex: 1 1 auto; min-height: 180px;
+    background: var(--karte); border: 1px solid var(--rand); border-radius: 10px;
+    overflow: hidden;
+  }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+  /* Die Linie, auf der unterschrieben wird. Sie liegt als eigenes Element über
+     dem Canvas und landet deshalb nicht im Bild — im Vertrag stünde sie sonst
+     quer durch die Unterschrift. */
+  .linie {
+    position: absolute; left: 24px; right: 24px; bottom: 26%;
+    border-bottom: 1px solid var(--rand); pointer-events: none;
+  }
+  .wink {
+    position: absolute; left: 0; right: 0; bottom: calc(26% - 26px);
+    text-align: center; color: var(--leise); font-size: 14px; pointer-events: none;
+  }
+  .feld.beschrieben .linie, .feld.beschrieben .wink { opacity: 0; }
+
+  .knoepfe { flex: 0 0 auto; display: flex; gap: 10px; padding-top: 12px; }
+  button {
+    font: inherit; font-weight: 500; padding: 14px 20px; border-radius: 10px;
+    border: 1px solid var(--rand); background: var(--karte); color: var(--text);
+    /* Alles unter 44pt trifft man auf einem Tablet nicht zuverlässig. */
+    min-height: 52px; cursor: pointer;
+  }
+  button.haupt { margin-left: auto; background: var(--ton); border-color: var(--ton); color: #fff; }
+  button[disabled] { opacity: .4; }
+
+  .hinweis { flex: 0 0 auto; padding-top: 12px; margin: 0; color: var(--leise); font-size: 13px; }
+  .hinweis.fehler { color: #a33; }
+
+  .fertig { display: none; text-align: center; padding: 48px 16px; }
+  body.erledigt main, body.erledigt .knoepfe, body.erledigt .hinweis, body.erledigt header { display: none; }
+  body.erledigt .fertig { display: block; }
+</style>
+
+<header>
+  <h1>Bitte hier unterschreiben</h1>
+  <p class="doc">{{DOKUMENT}}</p>
+</header>
+
+<main>
+  <div class="feld" id="feld">
+    <canvas id="blatt"></canvas>
+    <div class="linie"></div>
+    <div class="wink">Mit dem Stift auf der Linie unterschreiben</div>
+  </div>
+</main>
+
+<div class="knoepfe">
+  <button type="button" id="zurueck">Rückgängig</button>
+  <button type="button" id="loeschen">Löschen</button>
+  <button type="button" id="fertig" class="haupt" disabled>Fertig</button>
+</div>
+
+<p class="hinweis" id="hinweis">
+  Aufgezeichnet werden die Unterschrift und der Schreibvorgang (Druck, Neigung und
+  Zeitpunkt der Striche). Sie dienen allein dazu, die Unterschrift später belegen zu
+  können, und bleiben im Dokument.
+</p>
+
+<div class="fertig">
+  <h1>Danke.</h1>
+  <p class="doc">Die Unterschrift ist übertragen. Dieses Fenster kann geschlossen werden.</p>
+</div>
+
+<script type="module">
+  const $ = id => document.getElementById(id);
+  const blatt = $("blatt"), feld = $("feld"), hinweis = $("hinweis");
+  const stift = blatt.getContext("2d");
+
+  // Alle Striche der Unterschrift, und zwar als Quelle der Wahrheit: das Canvas
+  // wird bei jeder Größenänderung geleert, und auf dem iPad ändert sich die
+  // Größe schon, wenn Safari seine Leisten ein- oder ausblendet. Ohne diese
+  // Liste wäre die Unterschrift dann weg.
+  //
+  // Je Messpunkt steht hier mehr als die Linie zeigt: Druck, Neigung und Zeit
+  // sind das, woran sich ein Schreibvorgang später wiedererkennen lässt — das
+  // Bild allein zeigt nur das Ergebnis.
+  //
+  // Die Koordinaten sind auf die Breite bezogen (x/b, y/b), beide durch
+  // dieselbe Zahl geteilt. Beim Drehen skaliert die Unterschrift dadurch mit,
+  // ohne in die Breite gezogen zu werden.
+  const striche = [];
+  let strich = null;
+  // Sobald einmal mit dem Stift begonnen wurde, zählt nur noch der Stift. Damit
+  // ist der aufliegende Handballen stumm — und wo kein Stift da ist, geht es
+  // weiterhin mit dem Finger.
+  let art = null;
+
+  const CSS = () => blatt.getBoundingClientRect();
+
+  function maszNehmen() {
+    const r = CSS();
+    // Auf 3 gedeckelt: darüber wächst nur der Speicherbedarf.
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    blatt.width = Math.max(1, Math.round(r.width * dpr));
+    blatt.height = Math.max(1, Math.round(r.height * dpr));
+    // Ab hier wird in CSS-Pixeln gerechnet, das Gerät skaliert selbst.
+    stift.setTransform(dpr, 0, 0, dpr, 0, 0);
+    stift.lineCap = "round";
+    stift.lineJoin = "round";
+    // Voll deckend: bei Teiltransparenz zeigen sich Nähte, wo die Feder
+    // zweimal über dieselbe Stelle geht.
+    stift.strokeStyle = "#101014";
+    neuZeichnen();
+  }
+
+  const punkt = (e, breite) => ({
+    x: e.offsetX / breite,
+    y: e.offsetY / breite,
+    // Der Pencil liefert echten Druck; ein Finger meldet 0 oder konstant 0,5.
+    p: typeof e.pressure === "number" ? e.pressure : 0,
+    tx: e.tiltX || 0,
+    ty: e.tiltY || 0,
+    t: Math.round(e.timeStamp),
+  });
+
+  // Aus dem Druck eine Strichstärke machen. Ohne Druck (Finger, älteres Gerät)
+  // bleibt es bei einer gleichmäßigen Linie.
+  const staerke = p => (p > 0 ? 0.8 + p * 2.2 : 1.8);
+  const MAX_STAERKE = 3;
+
+  function segment(von, nach, breite) {
+    stift.beginPath();
+    stift.lineWidth = staerke((von.p + nach.p) / 2);
+    stift.moveTo(von.x * breite, von.y * breite);
+    stift.lineTo(nach.x * breite, nach.y * breite);
+    stift.stroke();
+  }
+
+  function neuZeichnen() {
+    const breite = CSS().width;
+    stift.clearRect(0, 0, blatt.width, blatt.height);
+    for (const s of striche) {
+      for (let i = 1; i < s.punkte.length; i++) segment(s.punkte[i - 1], s.punkte[i], breite);
+    }
+    feld.classList.toggle("beschrieben", striche.length > 0);
+    $("fertig").disabled = !striche.some(s => s.punkte.length > 1);
+    $("zurueck").disabled = !striche.length;
+  }
+
+  blatt.addEventListener("pointerdown", e => {
+    // Der erste Kontakt bestimmt, was ab jetzt zählt.
+    if (art === null) art = e.pointerType;
+    else if (e.pointerType !== art) return;
+    e.preventDefault();
+    blatt.setPointerCapture(e.pointerId);
+    strich = { art: e.pointerType, punkte: [punkt(e, CSS().width)] };
+    striche.push(strich);
+    feld.classList.add("beschrieben");
+    $("zurueck").disabled = false;
+  });
+
+  blatt.addEventListener("pointermove", e => {
+    if (!strich || e.pointerType !== art) return;
+    e.preventDefault();
+    const breite = CSS().width;
+    // Der Pencil tastet mit rund 240 Hz ab, `pointermove` feuert mit der
+    // Bildrate. Ohne die zusammengefassten Zwischenpunkte ginge jeder dritte
+    // bis vierte verloren und schnelle Schwünge würden eckig.
+    const roh = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+    for (const r of roh.length ? roh : [e]) {
+      const p = punkt(r, breite), vorher = strich.punkte[strich.punkte.length - 1];
+      strich.punkte.push(p);
+      segment(vorher, p, breite);
+    }
+    // Vorhergesagte Punkte (`getPredictedEvents`) bleiben bewusst draußen: sie
+    // sind geraten und stünden sonst mit im Vertrag.
+    $("fertig").disabled = strich.punkte.length < 2;
+  });
+
+  const absetzen = e => {
+    if (!strich) return;
+    if (blatt.hasPointerCapture(e.pointerId)) blatt.releasePointerCapture(e.pointerId);
+    // Ein einzelner Tupfer ist kein Strich.
+    if (strich.punkte.length < 2) striche.pop();
+    strich = null;
+    neuZeichnen();
+  };
+  blatt.addEventListener("pointerup", absetzen);
+  blatt.addEventListener("pointercancel", absetzen);
+
+  $("zurueck").onclick = () => { striche.pop(); neuZeichnen(); };
+  $("loeschen").onclick = () => {
+    striche.length = 0;
+    art = null;   // danach darf wieder der Finger ran
+    neuZeichnen();
+  };
+
+  // Auf das Geschriebene zuschneiden: mit dem leeren Rand des halben
+  // Bildschirms drumherum wäre die Unterschrift im Dokument winzig.
+  //
+  // Gerechnet wird aus den Punkten, nicht durch Absuchen der Bildpunkte — bei
+  // anderthalb Millionen Bildpunkten wäre das spürbar langsam.
+  function zuschneiden() {
+    const breite = CSS().width;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const s of striche) {
+      for (const p of s.punkte) {
+        x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x);
+        y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y);
+      }
+    }
+    if (!isFinite(x0)) return null;
+
+    // Erst den Ausschnitt vollständig in CSS-Pixeln bestimmen und **einmal** am
+    // Ende in Gerätepixel umrechnen. Beides zu mischen ist der Fehler, der auf
+    // einem Tablet mit doppelter Auflösung die halbe Unterschrift abschneidet.
+    const hoehe = CSS().height;
+    const luft = MAX_STAERKE / 2 + 8;
+    const l = Math.max(0, x0 * breite - luft);
+    const o = Math.max(0, y0 * breite - luft);
+    const r = Math.min(breite, x1 * breite + luft);
+    const u = Math.min(hoehe, y1 * breite + luft);
+    if (r - l < 1 || u - o < 1) return null;
+
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    const links = Math.round(l * dpr), oben = Math.round(o * dpr);
+    const b = Math.min(blatt.width - links, Math.round((r - l) * dpr));
+    const h = Math.min(blatt.height - oben, Math.round((u - o) * dpr));
+    if (b < 1 || h < 1) return null;
+
+    const aus = document.createElement("canvas");
+    aus.width = b;
+    aus.height = h;
+    // Kein Hintergrund: durchsichtig, damit die Unterschrift im Dokument nicht
+    // als weißer Kasten über der Vertragszeile sitzt. Genau dafür PNG.
+    aus.getContext("2d").drawImage(blatt, links, oben, b, h, 0, 0, b, h);
+    return aus.toDataURL("image/png");
+  }
+
+  $("fertig").onclick = async () => {
+    const knopf = $("fertig");
+    knopf.disabled = true;
+    knopf.textContent = "Wird übertragen…";
+    const png = zuschneiden();
+    if (!png) { melden("Es ist nichts zu sehen — bitte noch einmal unterschreiben.", true); return; }
+    try {
+      // `location.pathname` statt einer gebauten Adresse: das Zeichen steht
+      // schon darin, und so wird es kein zweites Mal zusammengesetzt.
+      const antwort = await fetch(location.pathname, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          png,
+          striche,
+          at: Date.now(),
+          geraet: navigator.userAgent,
+          dpr: Math.min(window.devicePixelRatio || 1, 3),
+        }),
+      });
+      if (!antwort.ok) throw new Error(String(antwort.status));
+      document.body.className = "erledigt";
+    } catch {
+      melden("Die Übertragung hat nicht geklappt. Ist die Verbindung noch da?", true);
+    }
+  };
+
+  function melden(text, schlimm) {
+    hinweis.textContent = text;
+    hinweis.className = schlimm ? "hinweis fehler" : "hinweis";
+    const knopf = $("fertig");
+    knopf.disabled = false;
+    knopf.textContent = "Fertig";
+  }
+
+  maszNehmen();
+  // `resize` deckt auch das Drehen ab und feuert dabei — anders als
+  // `orientationchange` — erst, wenn die Leisten an ihrem Platz sind.
+  window.addEventListener("resize", maszNehmen);
+</script>

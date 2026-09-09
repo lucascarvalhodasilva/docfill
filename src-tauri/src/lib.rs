@@ -1,9 +1,10 @@
 use std::fs::{self, DirBuilder, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
@@ -916,6 +917,315 @@ mod open {
     }
 }
 
+/* ---------- Unterschrift vom Tablet ----------
+   Der Klient sitzt im selben Raum und unterschreibt mit dem Stift auf dem
+   Tablet des Nutzers. Beide Geräte hängen im selben WLAN, deshalb genügt ein
+   winziger Server im lokalen Netz — kein Tunnel, kein fremder Anbieter.
+
+   Ausgeliefert wird ausschließlich die Unterschriftsseite. Das ausgefüllte
+   Dokument verlässt den Rechner nie: hinaus geht sein Name, herein kommt ein
+   Bild. Das Staging-Verzeichnis wird hier deshalb gar nicht erst angefasst.
+
+   Was zurückkommt, reicht Rust unbesehen ans Hauptfenster weiter — dieselbe
+   Trennung wie bei den Fensterbrücken weiter oben. Rust prüft nur die Größe. */
+
+const SIGN_MAX_BODY: usize = 2 * 1024 * 1024;
+const SIGN_TTL: Duration = Duration::from_secs(10 * 60);
+const SIGN_MAX_MISSES: u32 = 20;
+/// Die Seite liegt in `src/`, damit `scripts/check.mjs` sie mitprüft. Sie läuft
+/// in Safari auf dem Tablet, nicht im Webview, und wird deshalb hier eingebettet
+/// statt über Tauris Asset-Protokoll ausgeliefert.
+const SIGN_PAGE: &str = include_str!("../../src/sign.html");
+
+#[derive(Default)]
+struct SignServer {
+    session: Mutex<Option<SignSession>>,
+    /// Zählt die Sitzungen durch. Ein auslaufender Thread darf nur seine eigene
+    /// Sitzung aufräumen, sonst schlösse er den Server einer inzwischen neu
+    /// begonnenen.
+    seq: Mutex<u64>,
+}
+
+struct SignSession {
+    id: u64,
+    server: Arc<tiny_http::Server>,
+    /// Gesetzt, bevor der wartende Thread geweckt wird. `tiny_http` verrät von
+    /// sich aus nicht, ob es geweckt oder nur nichts gekommen ist — an dieser
+    /// Flagge unterscheidet der Thread beides.
+    stop: Arc<AtomicBool>,
+}
+
+/// Beendet die laufende Sitzung, falls es eine gibt. Idempotent wie
+/// `wipe_staging()` — es darf jederzeit nichts zu tun geben.
+fn sign_stop(state: &SignServer) {
+    let taken = state.session.lock().ok().and_then(|mut s| s.take());
+    if let Some(session) = taken {
+        session.stop.store(true, Ordering::SeqCst);
+        // Weckt den wartenden Thread; `recv_timeout` liefert dann nichts mehr.
+        session.server.unblock();
+    }
+}
+
+/// Vergleicht über die volle Länge, ohne bei der ersten Abweichung auszusteigen.
+/// Bei einem Geheimnis im Netz soll die Antwortzeit nicht verraten, wie viele
+/// Zeichen schon stimmen.
+fn ct_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+fn esc_html(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '&' => "&amp;".into(),
+            '<' => "&lt;".into(),
+            '>' => "&gt;".into(),
+            '"' => "&quot;".into(),
+            '\'' => "&#39;".into(),
+            _ => c.to_string(),
+        })
+        .collect()
+}
+
+/// Die Adresse dieses Rechners im lokalen Netz.
+///
+/// Verschickt nichts: UDP ist verbindungslos, `connect` schlägt nur in der
+/// Routing-Tabelle nach, welche Netzwerkkarte für ein fremdes Ziel zuständig
+/// wäre, und `local_addr` verrät dann deren Adresse. Ohne Standardweg — kein
+/// WLAN, kein Netz — schlägt das fehl, und der Nutzer bekommt das gesagt,
+/// statt eine unerreichbare Adresse angeboten zu bekommen.
+fn lan_ip() -> Option<std::net::IpAddr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("192.168.0.1:9").ok()?;
+    let ip = socket.local_addr().ok()?.ip();
+    // Nur eine Adresse aus dem privaten Bereich taugt. Bei aktivem VPN zeigt die
+    // Standardroute in den Tunnel; dessen Adresse erreicht das Tablet nie, und
+    // ein QR-Code, der ins Leere führt, ist schlimmer als eine klare Absage.
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.is_private().then_some(ip),
+        std::net::IpAddr::V6(_) => None,
+    }
+}
+
+fn header(name: &str, value: &str) -> Option<tiny_http::Header> {
+    tiny_http::Header::from_bytes(name.as_bytes(), value.as_bytes()).ok()
+}
+
+/// Alles, was nicht genau der Link mit dem richtigen Zeichen ist, bekommt
+/// dieselbe nichtssagende Antwort — auch der abgelaufene und der bereits
+/// benutzte Link. Wer den Port findet, soll daraus nichts ableiten können.
+fn sign_reject(request: tiny_http::Request) {
+    let _ = request.respond(
+        tiny_http::Response::from_string("Nicht gefunden.").with_status_code(404),
+    );
+}
+
+/// Mindestens 128 Bit, hexadezimal. Die Länge steht hier und nicht nur in der
+/// Oberfläche: das Zeichen ist das Einzige, was den Link im WLAN schützt, und
+/// diese Zusage soll nicht davon abhängen, was das Webview schickt.
+fn token_plausible(token: &str) -> bool {
+    token.len() >= 32 && token.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Startet den Server und gibt die Adresse zurück, die auf den QR-Code kommt.
+/// Das Zeichen kommt aus dem Webview (`crypto.getRandomValues`) — der Nonce aus
+/// `staging_dir()` taugt dafür nicht, der ist aus der Uhrzeit gebaut und ratbar.
+#[tauri::command]
+async fn sign_begin(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SignServer>,
+    token: String,
+    doc: String,
+) -> Result<String, String> {
+    if !token_plausible(&token) {
+        return Err("Interner Fehler".into());
+    }
+    sign_stop(&state);
+
+    let ip = lan_ip().ok_or_else(|| {
+        "Kein lokales Netz gefunden. Hängen Rechner und Tablet im selben WLAN?".to_string()
+    })?;
+    // Port 0: das Betriebssystem sucht einen freien aus, damit ein fest
+    // gewählter nicht eines Tages belegt ist.
+    let server = tiny_http::Server::http("0.0.0.0:0")
+        .map_err(|_| "Der Server konnte nicht gestartet werden.".to_string())?;
+    let port = server
+        .server_addr()
+        .to_ip()
+        .ok_or_else(|| "Der Server konnte nicht gestartet werden.".to_string())?
+        .port();
+    let server = Arc::new(server);
+
+    let id = {
+        let mut seq = state.seq.lock().map_err(|_| "Interner Fehler".to_string())?;
+        *seq += 1;
+        *seq
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    *state
+        .session
+        .lock()
+        .map_err(|_| "Interner Fehler".to_string())? = Some(SignSession {
+        id,
+        server: server.clone(),
+        stop: stop.clone(),
+    });
+
+    let path = format!("/s/{token}");
+    // Nur der Name wird eingesetzt. Wohin die Seite ihre Unterschrift schickt,
+    // liest sie selbst aus ihrer eigenen Adresse — das Zeichen steht schon
+    // darin und wird so kein zweites Mal zusammengesetzt.
+    let page = SIGN_PAGE.replace("{{DOKUMENT}}", &esc_html(&doc));
+    let url = format!("http://{ip}:{port}{path}");
+
+    std::thread::spawn(move || {
+        sign_serve(&app, &server, &path, page, id, &stop);
+    });
+
+    Ok(url)
+}
+
+/// Die Schleife des Servers. Läuft, bis unterschrieben wurde, bis die Zeit
+/// abgelaufen ist oder bis jemand abbricht.
+fn sign_serve(
+    app: &tauri::AppHandle,
+    server: &Arc<tiny_http::Server>,
+    path: &str,
+    page: String,
+    id: u64,
+    stop: &AtomicBool,
+) {
+    let started = Instant::now();
+    let mut daneben: u32 = 0;
+    // Kurze Wartezeit statt endlosem Blockieren: nur so merkt die Schleife von
+    // selbst, dass die zehn Minuten um sind, wenn nie jemand anklopft.
+    while started.elapsed() < SIGN_TTL {
+        let request = match server.recv_timeout(Duration::from_secs(1)) {
+            Ok(Some(request)) => request,
+            // Nichts gekommen — oder abgebrochen. `unblock()` lässt `recv_timeout`
+            // von da an dauerhaft nichts liefern; ohne diese Prüfung liefe die
+            // Schleife bis zum Ablauf der Frist weiter und hielte den Port so
+            // lange offen, obwohl längst abgebrochen wurde.
+            Ok(None) => {
+                if stop.load(Ordering::SeqCst) {
+                    break;
+                }
+                continue;
+            }
+            Err(_) => break,
+        };
+        // Der Pfad trägt das Zeichen. Stimmt es nicht, gibt es nichts zu sehen.
+        if !ct_eq(request.url(), path) {
+            sign_reject(request);
+            // Wer den Port findet, darf nicht in Ruhe raten. Nach ein paar
+            // Fehlgriffen ist die Sitzung verbraucht statt bis zum Ablauf offen.
+            daneben += 1;
+            if daneben >= SIGN_MAX_MISSES {
+                break;
+            }
+            continue;
+        }
+        match request.method() {
+            tiny_http::Method::Get => {
+                let mut response = tiny_http::Response::from_string(page.clone());
+                if let Some(h) = header("Content-Type", "text/html; charset=utf-8") {
+                    response.add_header(h);
+                }
+                // Der Link gilt einmal; ein Zwischenspeicher würde die Seite
+                // nach dem Absenden noch einmal zeigen.
+                if let Some(h) = header("Cache-Control", "no-store") {
+                    response.add_header(h);
+                }
+                // Die CSP aus tauri.conf.json gilt für den Webview, nicht für
+                // Safari auf dem Tablet. Die Seite lädt nichts nach, also darf
+                // hier alles zu sein außer dem, was sie selbst mitbringt.
+                for (name, value) in [
+                    ("Content-Security-Policy",
+                     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'self'; form-action 'none'; base-uri 'none'"),
+                    ("X-Content-Type-Options", "nosniff"),
+                    ("Referrer-Policy", "no-referrer"),
+                ] {
+                    if let Some(h) = header(name, value) {
+                        response.add_header(h);
+                    }
+                }
+                let _ = request.respond(response);
+            }
+            tiny_http::Method::Post => {
+                match sign_read_body(request) {
+                    Ok(body) => {
+                        // Rust schaut nicht hinein — das Hauptfenster kennt die
+                        // Form, wie bei den Fensterbrücken auch.
+                        let _ = app.emit_to("main", "docfill://signature", body);
+                        break; // einmalig: nach der Unterschrift ist Schluss
+                    }
+                    Err(response) => {
+                        let _ = response;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Nur die eigene Sitzung aufräumen: `sign_begin` kann inzwischen eine neue
+    // begonnen haben, deren Server weiterlaufen muss.
+    if let Some(state) = app.try_state::<SignServer>() {
+        if let Ok(mut session) = state.session.lock() {
+            if session.as_ref().is_some_and(|s| s.id == id) {
+                *session = None;
+            }
+        }
+    }
+}
+
+/// Liest den Rumpf einer Unterschrift, mit harter Obergrenze. Antwortet selbst,
+/// damit der Anrufer nicht ohne Antwort dasteht.
+fn sign_read_body(mut request: tiny_http::Request) -> Result<String, ()> {
+    if request.body_length().is_some_and(|n| n > SIGN_MAX_BODY) {
+        let _ = request.respond(
+            tiny_http::Response::from_string("Zu groß.").with_status_code(413),
+        );
+        return Err(());
+    }
+    let mut body = String::new();
+    // `take` auch dann, wenn keine Länge angekündigt war: bei „chunked" steht
+    // sie nicht im Kopf, und ohne Grenze liefe der Speicher voll.
+    let read = request
+        .as_reader()
+        .take(SIGN_MAX_BODY as u64 + 1)
+        .read_to_string(&mut body);
+    if read.is_err() || body.len() > SIGN_MAX_BODY {
+        let _ = request.respond(
+            tiny_http::Response::from_string("Fehlerhafte Anfrage.").with_status_code(400),
+        );
+        return Err(());
+    }
+    let _ = request.respond(tiny_http::Response::from_string("Danke."));
+    Ok(body)
+}
+
+/// Bricht ab, ohne dass unterschrieben wurde.
+#[tauri::command]
+async fn sign_cancel(state: tauri::State<'_, SignServer>) -> Result<(), String> {
+    sign_stop(&state);
+    Ok(())
+}
+
+/// Der QR-Code zur Adresse, als SVG. Die Oberfläche macht daraus eine
+/// `data:`-Adresse — das erlaubt die CSP über `img-src 'self' data: blob:`,
+/// eine Änderung daran ist also nicht nötig.
+#[tauri::command]
+async fn sign_qr(url: String) -> Result<String, String> {
+    let code = qrcode::QrCode::new(url.as_bytes())
+        .map_err(|_| "Der QR-Code konnte nicht erzeugt werden.".to_string())?;
+    Ok(code
+        .render::<qrcode::render::svg::Color>()
+        .min_dimensions(240, 240)
+        .quiet_zone(true)
+        .build())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -926,6 +1236,7 @@ pub fn run() {
         .manage(HistoryBridge::default())
         .manage(KeysBridge::default())
         .manage(OriginPaths::default())
+        .manage(SignServer::default())
         // Mit dem Hauptfenster endet das Programm. Ohne das hier lief der
         // Prozess nach dem Schließen weiter — ohne Fenster, aber am Leben —,
         // und damit blieb der Ablageordner im Temp liegen und die Historie
@@ -944,6 +1255,12 @@ pub fn run() {
                         // Versprechen, dass nichts im Temp liegen bleibt, soll
                         // nicht davon abhängen, über welchen Weg das Programm
                         // endet. remove_dir_all darf ins Leere greifen.
+                        // Der Unterschriftsserver hört auf, sobald das
+                        // Fenster weg ist — sonst bliebe ein offener Port im
+                        // WLAN zurück, auf den niemand mehr achtet.
+                        if let Some(state) = handle.try_state::<SignServer>() {
+                            sign_stop(&state);
+                        }
                         wipe_staging();
                         // Ausdrücklich beenden, statt darauf zu bauen, dass
                         // Tauri von selbst geht, wenn das letzte Fenster zu ist.
@@ -980,15 +1297,21 @@ pub fn run() {
             group_list,
             group_read_doc,
             group_delete,
-            list_printers
+            list_printers,
+            sign_begin,
+            sign_cancel,
+            sign_qr
         ])
         .build(tauri::generate_context!())
         .expect("error while running docfill")
-        .run(|_app, event| {
+        .run(|app, event| {
             // staged documents hold personal data; don't leave them in temp.
             // Zweiter Halt neben dem Fenster-Handler: greift für Wege, die am
             // Hauptfenster vorbeigehen, etwa ⌘Q auf macOS.
             if let tauri::RunEvent::Exit = event {
+                if let Some(state) = app.try_state::<SignServer>() {
+                    sign_stop(&state);
+                }
                 wipe_staging();
             }
         });
@@ -1012,6 +1335,65 @@ mod tests {
     /// Ein gescheiterter Test soll die übrigen nicht mitreißen.
     fn staging_guard() -> std::sync::MutexGuard<'static, ()> {
         STAGING.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn ct_eq_matches_ordinary_eq() {
+        for (a, b) in [
+            ("", ""),
+            ("abc", "abc"),
+            ("abc", "abd"),
+            ("abc", "ab"),
+            ("", "a"),
+            ("0f9e", "0F9E"),
+        ] {
+            assert_eq!(ct_eq(a, b), a == b, "ct_eq({a:?}, {b:?})");
+        }
+    }
+
+    #[test]
+    fn esc_html_neutralises_markup() {
+        // Der Dateiname kommt vom Nutzer und steht auf der Seite, die ein
+        // fremdes Gerät anzeigt. Er darf dort kein Auszeichnungselement werden.
+        let out = esc_html(r#"<script>alert("x")</script>&'"#);
+        for c in ['<', '>', '"', '\''] {
+            assert!(!out.contains(c), "{c:?} hat überlebt: {out}");
+        }
+        assert!(out.contains("&amp;"), "kaufmännisches Und nicht maskiert: {out}");
+        assert_eq!(esc_html("Vertrag Müller.docx"), "Vertrag Müller.docx");
+    }
+
+    #[test]
+    fn token_plausible_rejects_the_weak_ones() {
+        assert!(token_plausible("0123456789abcdef0123456789abcdef"));
+        assert!(!token_plausible(""));
+        // 31 Zeichen: einer zu wenig
+        assert!(!token_plausible("0123456789abcdef0123456789abcde"));
+        // richtige Länge, aber kein Hex — etwa ein durchgereichter Pfad
+        assert!(!token_plausible("../../etc/passwd________________"));
+        assert!(!token_plausible("0123456789abcdef0123456789abcde/"));
+    }
+
+    #[test]
+    fn sign_stop_clears_the_session_and_runs_twice() {
+        let state = SignServer::default();
+        // Auf die Rückrufadresse binden, nicht auf 0.0.0.0: sonst fragt die
+        // Firewall des Entwicklungsrechners bei jedem Testlauf nach.
+        let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
+        let stop = Arc::new(AtomicBool::new(false));
+        *state.session.lock().unwrap() = Some(SignSession {
+            id: 1,
+            server,
+            stop: stop.clone(),
+        });
+
+        sign_stop(&state);
+        assert!(state.session.lock().unwrap().is_none(), "Sitzung nicht geräumt");
+        // Die Flagge ist das, woran der wartende Thread den Abbruch erkennt.
+        // Ohne sie liefe er bis zum Ablauf der Frist weiter und hielte den Port.
+        assert!(stop.load(Ordering::SeqCst), "Abbruch nicht angezeigt");
+
+        sign_stop(&state); // idempotent wie wipe_staging
     }
 
     #[test]
