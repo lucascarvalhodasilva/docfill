@@ -530,7 +530,9 @@ async fn open_history_window(
         tauri::WebviewUrl::App("history.html".into()),
     )
     .title("Historie")
-    .inner_size(620.0, 700.0)
+    // dieselbe Größe wie Formular- und Zahnrad-Fenster: alle drei zeigen eine
+    // Liste untereinander und stehen oft nebeneinander auf dem Schirm.
+    .inner_size(482.0, 640.0)
     .min_inner_size(420.0, 360.0)
     .build()
     .map(|_| ())
