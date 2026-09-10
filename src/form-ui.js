@@ -63,9 +63,14 @@ export function fromISO(s, format) {
 // Die Namen unterscheiden, was Word unterscheidet: eine Auswahlliste lässt nur
 // die vorgegebenen Einträge zu, ein Kombinationsfeld auch eigene. Wer das nicht
 // weiß, tippt in ein Feld, das gar nichts annimmt.
+//
+// Jeder Typ hat einen Namen, auch das Ankreuzfeld. Im Formular sieht man ihm
+// zwar an, was es ist — im Zahnrad-Fenster ist der Typ aber die einzige Angabe
+// dazu, und eine zugeklappte Zeile stünde sonst ohne da.
 export const TYPE_LABEL = {
   text: "Text", multi: "Text, mehrzeilig", rich: "Rich Text", date: "Datum",
-  dropdown: "Auswahlliste", combo: "Liste, auch frei", checkbox: "", picture: "Unterschrift",
+  dropdown: "Auswahlliste", combo: "Liste, auch frei", checkbox: "Ankreuzfeld",
+  picture: "Unterschrift",
 };
 
 /**

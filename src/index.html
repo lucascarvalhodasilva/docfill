@@ -326,6 +326,7 @@
 <!-- Ersatz für das Zahnrad-Fenster ohne Tauri, wie formDlg für das Formular -->
 <dialog id="keysDlg">
   <div class="bar"><b id="keysName"></b><span id="keysMeta" class="meta"></span>
+    <button type="button" id="dlgFaltenAlle" class="link">Alle zuklappen</button>
     <button id="keysCancel">Abbrechen</button></div>
   <div id="dlgKeys"></div>
   <div class="bar"><label class="check"><input type="checkbox" id="writeTagsDlg">
@@ -347,7 +348,7 @@
 import { invoke, listen } from "./vendor/tauri-api.js";
 import { renderFields, collectValues, emptyText, esc } from "./form-ui.js";
 import { defineMenu, openMenu, closeMenu, menuOpenFor } from "./menu-ui.js";
-import { renderControls, collectOverrides, overrideMeta, writeTagsLabel } from "./keys-ui.js";
+import { renderControls, collectOverrides, overrideMeta, writeTagsLabel, faltenAlle, alleZu } from "./keys-ui.js";
 import { renderHistory, size } from "./history-ui.js";
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const W14 = "http://schemas.microsoft.com/office/word/2010/wordml";
@@ -1230,8 +1231,21 @@ async function openKeys(d) {
   $("writeTagsDlg").checked = false;
   $("writeTagsDlgNote").textContent = writeTagsLabel(false);   // ohne Tauri gibt es keinen Pfad
   renderControls($("dlgKeys"), controls, known);
+  dlgFaltenBeschriften();
   $("keysDlg").showModal();
 }
+// Dasselbe wie im Zahnrad-Fenster: ein Knopf für die ganze Liste, und er sagt,
+// was er täte. Als Eigenschaft gesetzt, nicht mit addEventListener: `openKeys`
+// läuft bei jedem Zahnrad-Klick erneut, Listener würden sich stapeln.
+const dlgFaltenBeschriften = () => {
+  $("dlgFaltenAlle").textContent = alleZu($("dlgKeys")) ? "Alle aufklappen" : "Alle zuklappen";
+};
+$("dlgFaltenAlle").onclick = () => {
+  faltenAlle($("dlgKeys"), !alleZu($("dlgKeys")));
+  dlgFaltenBeschriften();
+};
+$("dlgKeys").onclick = e => { if (e.target.closest("[data-k=falten]")) dlgFaltenBeschriften(); };
+
 $("keysCancel").onclick = () => { keysTarget = null; $("keysDlg").close(); };
 $("keysOk").onclick = () => {
   const d = keysTarget;

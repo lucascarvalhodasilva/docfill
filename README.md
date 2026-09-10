@@ -193,6 +193,13 @@ würde prompt für einen gehalten.
 Ein abgewähltes Feld tritt als Ganzes zurück; nur der Haken selbst bleibt
 kräftig, denn er ist das, was man dann anklicken will.
 
+Rechts neben dem Haken klappt ein Falter die Zeile zu. Zugeklappt bleibt die
+Kopfzeile stehen und bekommt links den **Schlüssel** dazu — ohne ihn wüsste man
+bei einer zugeklappten Zeile nicht mehr, welches Feld sie meint. Abgelesen wird
+er erst beim Zuklappen, damit ein inzwischen geänderter auch dort steht.
+Eingaben bleiben dabei erhalten und werden weiterhin eingesammelt; der Zustand
+hält nur, solange das Fenster offen ist.
+
 ## Vorlagen und Makros
 
 Docfill nimmt vier Dateitypen an. Innen sind sie dasselbe — dieselben Teile,

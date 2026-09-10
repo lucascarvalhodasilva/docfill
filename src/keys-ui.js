@@ -101,6 +101,43 @@ function nummerieren(liste) {
   });
 }
 
+// Auf- und Zuklappen einer Zeile. Zugeklappt bleibt die Kopfzeile stehen und
+// bekommt links den Schlüssel dazu — abgelesen erst beim Zuklappen, damit ein
+// inzwischen geänderter Schlüssel auch dort steht und nichts nachgeführt werden
+// muss. Der Zustand hält nur, solange das Fenster offen ist; es baut seine
+// Liste bei jedem Öffnen neu auf.
+function bindFalter(row) {
+  const knopf = row.querySelector("[data-k=falten]");
+  const name = row.querySelector(".zusammen");
+  knopf.addEventListener("click", () => {
+    const zu = row.classList.toggle("zu");
+    knopf.setAttribute("aria-expanded", String(!zu));
+    knopf.title = zu ? "Aufklappen" : "Zuklappen";
+    name.textContent = zu ? row.querySelector("[data-k=key]").value.trim() : "";
+    name.hidden = !zu;
+  });
+}
+
+/** Sind alle Zeilen zugeklappt? Bei einer leeren Liste: nein, es gibt nichts. */
+export function alleZu(container) {
+  const zeilen = [...container.querySelectorAll(".ctrl[data-orig]")];
+  return zeilen.length > 0 && zeilen.every(r => r.classList.contains("zu"));
+}
+
+/**
+ * Alle Zeilen auf einmal zu- oder aufklappen.
+ *
+ * Ausgelöst wird dafür der Falter jeder Zeile, statt die Klasse selbst zu
+ * setzen: am Falter hängt auch der Schlüssel in der Kopfzeile, `aria-expanded`
+ * und die Beschriftung. Zwei Wege, die dasselbe tun sollen, laufen sonst beim
+ * nächsten Umbau auseinander.
+ */
+export function faltenAlle(container, zu) {
+  for (const row of container.querySelectorAll(".ctrl[data-orig]")) {
+    if (row.classList.contains("zu") !== zu) row.querySelector("[data-k=falten]").click();
+  }
+}
+
 /** Klicks auf „hinzufügen" und „entfernen" — eine Behandlung für die ganze Liste. */
 function bindSettings(row) {
   const block = row.querySelector("[data-k=options]");
@@ -147,12 +184,17 @@ export function renderControls(container, controls, known) {
     const row = document.createElement("div");
     row.className = "ctrl";
     row.dataset.orig = c.orig;
-    // Links der Feldtyp, rechts der Haken mit seiner Beschriftung. Links stünde
-    // „Im Formular" an der Stelle, an der man den Namen des Steuerelements
-    // erwartet — und läse sich prompt wie einer.
-    row.innerHTML = `<span class="meta">${esc(meta)}</span>
+    // Rechts der Feldtyp, der Haken und der Falter. Links stünde eine
+    // Beschriftung an der Stelle, an der man den Namen des Steuerelements
+    // erwartet — und läse sich prompt wie einer. Dort steht deshalb nur der
+    // Schlüssel, und auch nur, solange die Zeile zugeklappt ist: sonst wüsste
+    // man bei einer zugeklappten Zeile nicht mehr, welches Feld sie meint.
+    row.innerHTML = `<span class="zusammen" hidden></span>
+      <span class="meta">${esc(meta)}</span>
       <label class="check"><span>Im Formular</span><input type="checkbox" data-k="on" ${c.hidden ? "" : "checked"}
         aria-label="${esc(c.title)} im Formular zeigen"></label>
+      <button type="button" class="falter" data-k="falten" aria-expanded="true"
+        title="Zuklappen" aria-label="Einstellungen von ${esc(c.title)} zuklappen"></button>
       <label class="k" for="${id}">Schlüssel</label>
       <input type="text" id="${id}" data-k="key" list="knownKeys" maxlength="120"
         value="${esc(c.key || c.auto)}" placeholder="ohne festen Schlüssel">
@@ -161,6 +203,7 @@ export function renderControls(container, controls, known) {
     // einmal tippt, meint es aber ernst: er legt das Feld auf diesen Schlüssel
     // fest und damit mit einem gleichnamigen aus einem anderen Dokument zusammen.
     row.querySelector("[data-k=key]").addEventListener("input", e => { e.target.dataset.edited = ""; });
+    bindFalter(row);
     bindSettings(row);
     container.appendChild(row);
   });

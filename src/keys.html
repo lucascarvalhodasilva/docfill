@@ -38,7 +38,8 @@
 </style>
 </head>
 <body>
-<h2><span class="who" id="docName"></span><span class="meta" id="listMeta"></span></h2>
+<h2><span class="who" id="docName"></span><span class="meta" id="listMeta"></span>
+  <button type="button" id="faltenAlle" class="link" disabled>Alle zuklappen</button></h2>
 <div id="list"></div>
 <footer>
   <label class="check"><input type="checkbox" id="writeTags">
@@ -57,7 +58,7 @@
 // gilt erst mit „Übernehmen“. Ein Schlüssel, der halb eingetippt schon wirkte,
 // zerrisse die Zuordnung mitten im Tippen.
 import { invoke } from "./vendor/tauri-api.js";
-import { renderControls, collectOverrides, writeTagsLabel } from "./keys-ui.js";
+import { renderControls, collectOverrides, writeTagsLabel, faltenAlle, alleZu } from "./keys-ui.js";
 
 const $ = id => document.getElementById(id);
 function setStatus(m, err) { const s = $("status"); s.textContent = m; s.className = err ? "error" : ""; }
@@ -85,7 +86,25 @@ async function load() {
   $("listMeta").textContent = `${controls.length} Steuerelement${controls.length === 1 ? "" : "e"}`;
   renderControls($("list"), controls, data.known || []);
   $("apply").disabled = false;
+  $("faltenAlle").disabled = false;
+  faltenBeschriften();
+  // Auch ein einzeln geklappter Falter ändert, was der Knopf anbietet — deshalb
+  // an der Liste lauschen statt in `bindFalter`: dort wüsste die Zeile nichts
+  // von der Kopfzeile.
+  $("list").addEventListener("click", e => {
+    if (e.target.closest("[data-k=falten]")) faltenBeschriften();
+  });
 }
+
+// „Alle zuklappen" oder „Alle aufklappen" — je nachdem, was gerade dasteht.
+function faltenBeschriften() {
+  const zu = alleZu($("list"));
+  $("faltenAlle").textContent = zu ? "Alle aufklappen" : "Alle zuklappen";
+}
+$("faltenAlle").onclick = () => {
+  faltenAlle($("list"), !alleZu($("list")));
+  faltenBeschriften();
+};
 
 async function apply() {
   if ($("apply").disabled) return;

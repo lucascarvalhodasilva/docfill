@@ -221,16 +221,30 @@ button.link:disabled { opacity:.4; cursor:default }
    davon Typ und Verbreitung, darunter der Schlüssel. Der Schlüssel steht
    bewusst unter der Bezeichnung und nicht daneben: er ist oft länger als das
    Feld, und nebeneinander gerieten Bezeichnung und Eingabe ins Gedränge. */
-.ctrl { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:4px 8px; padding:9px 0 }
+.ctrl { display:grid; grid-template-columns:minmax(0,1fr) auto auto auto; gap:4px 8px; padding:9px 0 }
 .ctrl:first-of-type { padding-top:0 }
 .ctrl + .ctrl { box-shadow:0 -1px 0 var(--line) }
 /* Kopfzeile der Zeile: Feldtyp und Haken stehen beide rechts, als ein Block
    Nebenangaben. Links bleibt frei — dort begänne sonst eine Beschriftung an
    genau der Stelle, an der man den Namen des Steuerelements erwartet, und
    würde prompt für einen gehalten. Den Namen trägt der Schlüssel darunter. */
-.ctrl .meta { grid-column:1; justify-self:end; align-self:center; color:var(--muted); min-width:0 }
-.ctrl .check { grid-column:2; justify-self:end; align-self:center; gap:6px;
+.ctrl .meta { grid-column:2; justify-self:end; align-self:center; color:var(--muted); min-width:0 }
+.ctrl .check { grid-column:3; justify-self:end; align-self:center; gap:6px;
                color:var(--muted); white-space:nowrap }
+/* Der Schlüssel einer zugeklappten Zeile — sonst sähe man ihr nicht an, welches
+   Feld sie meint. Er steht als einziges links, weil er dort der Name ist. */
+.ctrl .zusammen { grid-column:1; justify-self:start; align-self:center; min-width:0;
+                  overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+/* Der Falter: dasselbe Zeichen wie an einer Auswahlliste, nur gedreht, wenn zu. */
+.ctrl .falter { grid-column:4; justify-self:end; align-self:center;
+                width:24px; height:24px; padding:0; flex:none; line-height:1;
+                border-color:transparent; background:none; color:var(--muted) }
+.ctrl .falter::before { content:"▾"; display:block; font-size:13px;
+                        transition:transform var(--dur) var(--ease) }
+.ctrl .falter:hover { border-color:var(--field-line); color:var(--ink) }
+.ctrl.zu .falter::before { transform:rotate(-90deg) }
+/* Zugeklappt bleibt nur die Kopfzeile stehen. */
+.ctrl.zu .k, .ctrl.zu input[data-k=key], .ctrl.zu .opt { display:none }
 /* Abgewählt tritt zurück — wie die abgewählte Datei in der Dokumentliste
    (li.file). Der Haken selbst bleibt kräftig: er ist das, was man dann
    anklicken will. */
