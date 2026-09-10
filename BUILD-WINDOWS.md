@@ -6,9 +6,10 @@ Windows-Rechner.
 ## Der einfache Weg: GitHub bauen lassen
 
 Auf GitHub unter **Actions ▸ build ▸ Run workflow** den Lauf auf `main` starten.
-Der erste Durchlauf dauert 10–20 Minuten, spätere ein bis zwei. Danach liegt die
-fertige Datei unten im Lauf unter **Artifacts** im Paket
-`docfill-windows-installer`: herunterladen, entpacken, auf den USB-Stick.
+Der erste Durchlauf dauert 10–20 Minuten, spätere ein bis zwei. Danach liegt
+unten im Lauf unter **Artifacts** das Paket `docfill-windows-installer`:
+herunterladen und entpacken. Darin die `…-setup.exe` für den USB-Stick, die
+`.msi` für eine zentrale Verteilung und die `SHA256SUMS.txt` zum Gegenprüfen.
 
 Gebaut wird nach `.github/workflows/build.yml` auf einem Windows-Rechner von
 GitHub. Node, Rust und die Build Tools sind dort schon eingerichtet — die
