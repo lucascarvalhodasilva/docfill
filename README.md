@@ -368,8 +368,9 @@ Tauri-API dazu, dort exportieren und den Befehl erneut ausführen.
   erst, wenn jemand den Installer neu aus dem Release holt. Welche Fassung läuft,
   steht unten rechts im Fenster — das ist der einzige Weg, eine veraltete
   Installation zu bemerken.
-- Bevor gebaut wird, laufen die Tests, `cargo audit` und die Prüfung der
-  Oberfläche. Dependabot meldet neue Fassungen für Cargo, npm und die Actions.
+- Bei jedem Push laufen die Tests, `cargo audit` und die Prüfung der Oberfläche;
+  ohne einen grünen Durchgang entsteht kein Release. Dependabot meldet neue
+  Fassungen für Cargo, npm und die Actions.
 
 ### Unterschrift vom Tablet
 - Der Server läuft **nur im lokalen Netz** und **nur**, solange der Dialog offen ist. Es gibt

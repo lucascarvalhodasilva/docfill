@@ -14,6 +14,12 @@ Gebaut wird nach `.github/workflows/build.yml` auf einem Windows-Rechner von
 GitHub. Node, Rust und die Build Tools sind dort schon eingerichtet — die
 Installation aus Abschnitt 2 entfällt damit komplett.
 
+**Was wann läuft.** Jeder Push prüft: Tests, `cargo audit` und die Prüfung der
+Oberfläche, auf Linux in ein bis zwei Minuten. Der Windows-Installer entsteht
+dabei nicht — er dauert zehn bis zwanzig Minuten und brächte nichts, was die
+Prüfung nicht schon gesagt hätte. Gebaut wird nur bei einem Versionsschild oder
+wenn der Lauf von Hand gestartet wird.
+
 ## Eine Fassung veröffentlichen
 
 Ein Versionsschild löst denselben Lauf aus und hängt das Ergebnis zusätzlich an
@@ -26,8 +32,8 @@ Zuerst die Version in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` und
 Installationsdatei. Weicht eine davon vom Schild ab, bricht der Lauf gleich zu
 Beginn ab, statt eine falsch benannte Datei zu veröffentlichen.
 
-Vor dem Bau läuft ein eigener Durchgang mit den Tests, `cargo audit` und der
-Prüfung der Oberfläche. Ist dort etwas rot, entsteht kein Release.
+Auch hier läuft die Prüfung zuerst — Tests, `cargo audit`, Oberfläche. Ist dort
+etwas rot, entsteht kein Release.
 
 ```bash
 git tag v0.2.1

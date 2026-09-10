@@ -6,24 +6,34 @@ name: build
 on:
   # Von Hand auslösen: Actions ▸ build ▸ Run workflow.
   workflow_dispatch:
-  # Ein Versionsschild baut ebenfalls — und veröffentlicht ein Release.
   push:
+    # Jeder Push prüft. Ein Fehler soll auffallen, wenn er entsteht, und nicht
+    # erst in dem Moment, in dem veröffentlicht werden soll.
+    branches:
+      - "**"
+    # Ein Versionsschild prüft ebenfalls — und baut und veröffentlicht dann.
     tags:
       - "v*"
 
 # Schreibrecht, weil der letzte Schritt bei einem Versionsschild ein Release
-# anlegt. Für einen Lauf von Hand bleibt es ungenutzt.
+# anlegt. Bei einem gewöhnlichen Push bleibt es ungenutzt.
 permissions:
   contents: write
+
+# Wer zweimal kurz hintereinander pusht, braucht den ersten Lauf nicht mehr.
+# Ein Lauf zu einem Versionsschild wird nie abgebrochen: der veröffentlicht.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 # Die Actions hängen an ihrem Commit, nicht am wandernden Versionsschild: mit
 # `contents: write` im selben Bauplan hätte eine übernommene Action Schreibrecht
 # auf die Releases. Dependabot hält die SHAs nach (.github/dependabot.yml).
 
 jobs:
-  # Läuft vor dem Bau und auf Linux, weil beides dort in einer Minute erledigt
-  # ist. Vorher liefen die Tests überhaupt nicht in CI — es gab sie, aber nur
-  # von Hand. Ein roter Test soll kein Release erzeugen.
+  # Läuft bei jedem Push und auf Linux, weil beides dort in einer Minute
+  # erledigt ist. Vorher liefen die Tests überhaupt nicht in CI — es gab sie,
+  # aber nur von Hand. Ein roter Test soll kein Release erzeugen.
   pruefen:
     name: Tests und Abhängigkeiten
     runs-on: ubuntu-latest
@@ -78,10 +88,14 @@ jobs:
         continue-on-error: true
         run: npm audit --audit-level=high
 
+  # Nur bei einem Versionsschild oder von Hand. Der Bau dauert zehn bis zwanzig
+  # Minuten; ihn bei jedem Push mitlaufen zu lassen, brächte nichts, was der
+  # Prüf-Job oben nicht schon gesagt hätte.
   windows:
     name: Windows-Installer
     runs-on: windows-latest
     needs: pruefen
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
