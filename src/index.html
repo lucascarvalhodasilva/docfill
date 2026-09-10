@@ -282,7 +282,7 @@
 </div>
 
 <dialog id="renameDlg" class="small">
-  <div class="bar"><b>Formular umbenennen</b></div>
+  <div class="bar"><b id="renameTitle">Formular umbenennen</b></div>
   <div class="body">
     <label class="t" for="renameInput">Name</label>
     <input type="text" id="renameInput" maxlength="60">
@@ -875,23 +875,32 @@ async function buildForm() {
   const chosen = docs.filter(d => d.selected);
   if (!chosen.length) return;
   busy($("build"), true);
+  // eigene Kopie: die Gruppe überlebt es, wenn das Dokument links entfernt wird
+  const own = chosen.map(d => ({ name: d.name, buffer: d.buffer, overrides: d.overrides }));
+  let fields;
   try {
-    // eigene Kopie: die Gruppe überlebt es, wenn das Dokument links entfernt wird
-    const own = chosen.map(d => ({ name: d.name, buffer: d.buffer, overrides: d.overrides }));
-    const fields = await scanFields(own);
-    if (!fields.length) {
-      if (!groups.length) renderEmpty("nofields");
-      setStatus("In diesen Dokumenten stehen keine Inhaltssteuerelemente.", true);
-    } else {
-      groups.push({ id: crypto.randomUUID(), name: defaultName(own), favorite: false,
-                    docs: own, fields, values: {}, loaded: true });
-      renderTiles();
-      setStatus("");
-    }
+    fields = await scanFields(own);
   } catch (e) {
     setStatus("Ein Dokument konnte nicht gelesen werden: " + e.message, true);
+    busy($("build"), false);
+    return;
   }
   busy($("build"), false);
+  if (!fields.length) {
+    if (!groups.length) renderEmpty("nofields");
+    setStatus("In diesen Dokumenten stehen keine Inhaltssteuerelemente.", true);
+    return;
+  }
+  // Erst lesen, dann nach dem Namen fragen: für Dokumente ohne Steuerelemente
+  // gibt es nichts zu benennen, und danach zu fragen wäre eine Frage umsonst.
+  // Vorbelegt ist der Name der ersten Datei — meist das, was man ohnehin
+  // getippt hätte. Abbrechen legt kein Formular an.
+  askName("Formular benennen", "Erstellen", defaultName(own), name => {
+    groups.push({ id: crypto.randomUUID(), name: name || defaultName(own) || "Formular",
+                  favorite: false, docs: own, fields, values: {}, loaded: true });
+    renderTiles();
+    setStatus("");
+  });
 }
 $("build").onclick = buildForm;
 
@@ -1041,26 +1050,38 @@ async function loadFavorites() {
   if (groups.length) renderTiles();
 }
 
-/* ---------- Umbenennen / Aktualisieren / Löschen ---------- */
-let renameTarget = null;
+/* ---------- Benennen / Umbenennen / Aktualisieren / Löschen ---------- */
 
-function renameForm(id) {
-  const g = groupById(id); if (!g) return;
-  renameTarget = id;
-  $("renameInput").value = g.name;
+// Ein Dialog für zwei Fragen: wie das neue Formular heißen soll und wie ein
+// vorhandenes künftig heißen soll. Beide wollen dasselbe — einen Namen —, und
+// zwei Dialoge dafür liefen beim nächsten Umbau auseinander. Gebaut wie
+// `askConfirm`: die Aktion wird gemerkt und erst beim Bestätigen ausgeführt.
+let nameAction = null;
+function askName(titel, knopf, wert, action) {
+  $("renameTitle").textContent = titel;
+  $("renameOk").textContent = knopf;
+  $("renameInput").value = wert;
+  nameAction = action;
   $("renameDlg").showModal();
   $("renameInput").select();
 }
-$("renameCancel").onclick = () => $("renameDlg").close();
-$("renameOk").onclick = async () => {
-  const g = groupById(renameTarget);
+$("renameCancel").onclick = () => { nameAction = null; $("renameDlg").close(); };
+$("renameOk").onclick = () => {
   $("renameDlg").close();
-  if (!g) return;
-  g.name = $("renameInput").value.trim() || "Formular";
-  renderTiles();
-  await persistMeta(g);
+  const run = nameAction; nameAction = null;
+  if (run) run($("renameInput").value.trim());
 };
 $("renameInput").onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); $("renameOk").click(); } };
+
+function renameForm(id) {
+  const g = groupById(id); if (!g) return;
+  askName("Formular umbenennen", "Umbenennen", g.name, async name => {
+    const gg = groupById(id); if (!gg) return;   // inzwischen gelöscht
+    gg.name = name || "Formular";
+    renderTiles();
+    await persistMeta(gg);
+  });
+}
 
 // Aktualisieren liest die Dokumente der Gruppe neu; die Antworten fallen dabei
 // weg, weil sich die Felder geändert haben können.

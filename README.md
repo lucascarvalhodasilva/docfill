@@ -34,6 +34,18 @@ npm run build                    # Installationspakete in src-tauri/target/relea
 - `src-tauri/src/lib.rs` — 30 Befehle. Zum Öffnen, Speichern und Drucken: `open_document`, `pick_documents`, `write_back`, `print_document`, `save_document`, `save_all_begin`, `save_all_write`, `save_all_finish`, `list_printers`. Sie nehmen Inhalt und Wunschnamen entgegen, nie einen Zielpfad. Für das Formularfenster: `open_form_window`, `form_payload`, `form_cache_values`, `form_submit`, `close_form_window`. Für die Historie: `history_publish`, `open_history_window`, `history_payload`, `history_action`. Für das Zahnrad-Fenster: `open_keys_window`, `keys_payload`, `keys_submit`, `close_keys_window`. Für die gemerkten Formulare: `group_save_meta`, `group_save_doc`, `group_list`, `group_read_doc`, `group_delete`. Für die Unterschrift vom Tablet: `sign_begin`, `sign_cancel`, `sign_qr`. Rust liest kein OOXML und soll es auch nicht: von den vier Dateitypen kennt es nur die vier Endungen, und die allein für die beiden nativen Dialoge.
 - `src-tauri/capabilities/default.json` — nur `core:default`; die Oberfläche hat keinen Zugriff auf Dateisystem, Dialoge oder Shell.
 
+## Vom Dokument zum Formular
+
+„Formular erstellen" liest zuerst die ausgewählten Dokumente und fragt **erst
+dann** nach einem Namen — für Dateien ohne Inhaltssteuerelemente gäbe es nichts
+zu benennen, und danach zu fragen wäre eine Frage umsonst. Vorbelegt ist der
+Name der ersten Datei. Abbrechen legt kein Formular an.
+
+Gefragt wird mit demselben Dialog wie das Umbenennen: `askName(titel, knopf,
+wert, action)` in `src/index.html`, gebaut wie `askConfirm` — die Aktion wird
+gemerkt und erst beim Bestätigen ausgeführt. Zwei Dialoge für dieselbe Frage
+liefen beim nächsten Umbau auseinander.
+
 ## Wie ein Feld in mehreren Dokumenten wiedererkannt wird
 
 Damit dieselbe Angabe alle ausgewählten Dokumente füllt, brauchen die
