@@ -16,18 +16,82 @@ on:
 permissions:
   contents: write
 
+# Die Actions hängen an ihrem Commit, nicht am wandernden Versionsschild: mit
+# `contents: write` im selben Bauplan hätte eine übernommene Action Schreibrecht
+# auf die Releases. Dependabot hält die SHAs nach (.github/dependabot.yml).
+
 jobs:
+  # Läuft vor dem Bau und auf Linux, weil beides dort in einer Minute erledigt
+  # ist. Vorher liefen die Tests überhaupt nicht in CI — es gab sie, aber nur
+  # von Hand. Ein roter Test soll kein Release erzeugen.
+  pruefen:
+    name: Tests und Abhängigkeiten
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+
+      # Tauri braucht unter Linux GTK und WebKit, sonst scheitert schon das
+      # Übersetzen der Tests.
+      - name: Tauri-Voraussetzungen
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev
+
+      - run: npm ci
+
+      # Prüft die Oberfläche und die Prüfsummen der mitgelieferten
+      # Bibliotheken. Beim Bau ruft `beforeBuildCommand` dasselbe Skript auf;
+      # hier steht es, damit ein Lauf ohne Bau denselben Befund liefert.
+      - run: npm run check
+
+      - name: Tests
+        working-directory: src-tauri
+        run: cargo test
+
+      # Sagt, ob in den knapp 500 Kisten hinter `tauri` eine bekannte Lücke
+      # steckt. Docfill hat keinen Updater: was hier durchrutscht, bleibt auf
+      # den Rechnern, bis jemand den Installer von Hand neu holt.
+      - name: cargo audit
+        working-directory: src-tauri
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
+
+      # `npm audit` deckt nur die Bauwerkzeuge ab — die Oberfläche bringt ihre
+      # Bibliotheken als Datei mit. Deshalb ein Hinweis, kein Abbruch.
+      - name: npm audit (nur Bauwerkzeuge)
+        continue-on-error: true
+        run: npm audit --audit-level=high
+
   windows:
     name: Windows-Installer
     runs-on: windows-latest
+    needs: pruefen
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # Das Schild und die Version in tauri.conf.json müssen zusammenpassen,
       # sonst heißt die Datei im Release `Docfill_0.1.0_x64-setup.exe`, obwohl
       # das Schild v0.2.0 verspricht. Lieber gleich hier abbrechen als nach
-      # zwanzig Minuten Bauzeit.
+      # zwanzig Minuten Bauzeit. package.json wird mitgeprüft: sie benennt zwar
+      # keine Datei, aber eine Fassung, die an zwei Stellen verschieden steht,
+      # ist beim nächsten Nachsehen eine Fehlerquelle.
       - name: Version prüfen
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
@@ -36,17 +100,23 @@ jobs:
           if ($tag -ne $conf) {
             throw "Schild $tag passt nicht zur Version $conf in src-tauri/tauri.conf.json"
           }
+          $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($tag -ne $pkg) {
+            throw "Schild $tag passt nicht zur Version $pkg in package.json"
+          }
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: lts/*
           cache: npm
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
 
       # Ohne Zwischenspeicher übersetzt Rust bei jedem Lauf alles neu: 10–20
       # Minuten statt ein bis zwei. Das Crate liegt in src-tauri/, nicht oben.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: src-tauri
 
@@ -58,10 +128,29 @@ jobs:
       # ab, statt einen tadellosen Installer mit kaputter Oberfläche zu liefern.
       - run: npm run build
 
-      - uses: actions/upload-artifact@v4
+      # Docfill ist nicht signiert. Ohne Zertifikat sagt Windows nicht, ob eine
+      # heruntergeladene Datei die echte ist — die Prüfsumme sagt es. Sie steht
+      # im Release neben den Dateien, damit sich beides vergleichen lässt
+      # (Anleitung in BUILD-WINDOWS.md).
+      - name: Prüfsummen erzeugen
+        shell: pwsh
+        run: |
+          $bundle = "src-tauri/target/release/bundle"
+          $dateien = Get-ChildItem -Path "$bundle/nsis/*-setup.exe", "$bundle/msi/*.msi"
+          if (-not $dateien) { throw "Keine Installationsdateien gefunden" }
+          $zeilen = foreach ($d in $dateien) {
+            $summe = (Get-FileHash $d.FullName -Algorithm SHA256).Hash.ToLower()
+            "$summe  $($d.Name)"
+          }
+          $zeilen | Set-Content -Path "$bundle/SHA256SUMS.txt" -Encoding ascii
+          Get-Content "$bundle/SHA256SUMS.txt"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: docfill-windows-installer
-          path: src-tauri/target/release/bundle/nsis/*-setup.exe
+          path: |
+            src-tauri/target/release/bundle/nsis/*-setup.exe
+            src-tauri/target/release/bundle/SHA256SUMS.txt
           # Ohne das gilt ein Lauf auch dann als geglückt, wenn das Bündeln
           # still nichts erzeugt hat.
           if-no-files-found: error
@@ -72,11 +161,12 @@ jobs:
       # erreichbar — ein Release-Anhang bleibt und lässt sich weitergeben.
       - name: Release veröffentlichen
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: |
             src-tauri/target/release/bundle/nsis/*-setup.exe
             src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/SHA256SUMS.txt
           # Aus demselben Grund wie oben bei `if-no-files-found`.
           fail_on_unmatched_files: true
           generate_release_notes: true

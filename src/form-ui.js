@@ -102,6 +102,10 @@ export function renderFields(container, fields, values) {
     const hint = esc(f.hint || "");
     const w = document.createElement("div");
     w.className = "field";
+    // Zusammengesetzt aus Konstanten und Zahlen, also heute unverfänglich —
+    // escaped wird trotzdem, und zwar an beiden Einsatzstellen gleich. Eine
+    // Zeile, die nur an einer von zwei Stellen escaped, ist eine Falle für den
+    // nächsten, der hier etwas aus dem Dokument einhängt.
     const meta = [TYPE_LABEL[f.type], f.count > 1 ? `${f.count} Stellen` : "", docsText(f)].filter(Boolean).join(" · ");
     let c;
     if (f.type === "checkbox") {
@@ -133,7 +137,7 @@ export function renderFields(container, fields, values) {
       else if (f.type === "rich" || f.type === "multi")
         c = `<textarea id="${id}" data-key="${key}" placeholder="${hint}">${esc(cur)}</textarea>`;
       else c = `<input type="text" id="${id}" data-key="${key}" placeholder="${hint}" value="${esc(cur)}">`;
-      w.innerHTML = `<label class="t" for="${id}">${esc(f.title)}<span class="meta">${meta}</span></label>${c}`;
+      w.innerHTML = `<label class="t" for="${id}">${esc(f.title)}<span class="meta">${esc(meta)}</span></label>${c}`;
     }
     container.appendChild(w);
   });

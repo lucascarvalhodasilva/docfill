@@ -18,20 +18,24 @@ Installation aus Abschnitt 2 entfällt damit komplett.
 
 Ein Versionsschild löst denselben Lauf aus und hängt das Ergebnis zusätzlich an
 ein Release — anders als das Artefakt oben verfällt das nicht nach 30 Tagen und
-hat einen festen Link. Solange das Projekt privat ist, braucht es zum
-Herunterladen weiterhin ein GitHub-Konto mit Zugriff.
+hat einen festen Link. Das Repo ist öffentlich: der Link lässt sich weitergeben,
+zum Herunterladen braucht niemand ein Konto.
 
-Zuerst die Version in `src-tauri/tauri.conf.json` (und, damit beides beieinander
-bleibt, in `src-tauri/Cargo.toml`) auf die neue Nummer setzen und einchecken —
-sie benennt die Installationsdatei. Weicht sie vom Schild ab, bricht der Lauf
-gleich zu Beginn ab, statt eine falsch benannte Datei zu veröffentlichen.
+Zuerst die Version in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` und
+`package.json` auf die neue Nummer setzen und einchecken — die erste benennt die
+Installationsdatei. Weicht eine davon vom Schild ab, bricht der Lauf gleich zu
+Beginn ab, statt eine falsch benannte Datei zu veröffentlichen.
+
+Vor dem Bau läuft ein eigener Durchgang mit den Tests, `cargo audit` und der
+Prüfung der Oberfläche. Ist dort etwas rot, entsteht kein Release.
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.1
+git push origin v0.2.1
 ```
 
-Danach steht unter **Releases** `Docfill_0.1.0_x64-setup.exe` samt `.msi`.
+Danach steht unter **Releases** `Docfill_0.2.1_x64-setup.exe` samt `.msi` und
+der `SHA256SUMS.txt` zum Gegenprüfen.
 
 ## Der andere Weg: von Hand auf einem Windows-Rechner
 
@@ -77,12 +81,12 @@ Spätere Durchläufe brauchen ein bis zwei Minuten.
 Die fertige Installationsdatei liegt hier:
 
 ```
-src-tauri\target\release\bundle\nsis\Docfill_0.1.0_x64-setup.exe
+src-tauri\target\release\bundle\nsis\Docfill_0.2.1_x64-setup.exe
 ```
 
 Diese eine Datei auf den USB-Stick kopieren — mehr wird nicht gebraucht.
 
-Daneben entstehen noch `...\bundle\msi\Docfill_0.1.0_x64_en-US.msi` (für eine
+Daneben entstehen noch `...\bundle\msi\Docfill_0.2.1_x64_en-US.msi` (für eine
 zentrale Verteilung durch die IT) und `src-tauri\target\release\docfill.exe`
 (die Anwendung ohne Installation). Für den Test genügt die Datei aus `nsis`.
 
@@ -92,7 +96,7 @@ zentrale Verteilung durch die IT) und `src-tauri\target\release\docfill.exe`
 
 Dieser Abschnitt kann als Textdatei mit auf den Stick gelegt werden.
 
-**Installation.** `Docfill_0.1.0_x64-setup.exe` doppelklicken. Die Installation
+**Installation.** `Docfill_0.2.1_x64-setup.exe` doppelklicken. Die Installation
 erfolgt nur für das eigene Benutzerkonto, ein Administratorkennwort wird nicht
 gebraucht. Danach steht Docfill im Startmenü; deinstallieren lässt es sich unter
 *Einstellungen ▸ Apps* wie jedes andere Programm.
@@ -101,6 +105,18 @@ gebraucht. Danach steht Docfill im Startmenü; deinstallieren lässt es sich unt
 geschützt" erscheint, weil das Programm kein gekauftes Zertifikat hat — nicht,
 weil etwas nicht stimmt. Auf **Weitere Informationen** und dann auf **Trotzdem
 ausführen** klicken. Die Meldung kommt nur beim ersten Mal.
+
+**Ist es wirklich die echte Datei?** Weil das Zertifikat fehlt, kann Windows die
+Frage nicht beantworten — die Prüfsumme kann es. Bei jedem Release liegt eine
+Datei `SHA256SUMS.txt`. Die Zeile für den eigenen Installer mit dem vergleichen,
+was dieser Befehl in der Eingabeaufforderung ausgibt:
+
+```
+certutil -hashfile Docfill_0.2.1_x64-setup.exe SHA256
+```
+
+Stimmen die beiden Zeichenfolgen überein, ist die Datei unverändert. Stimmen sie
+nicht überein, die Datei **nicht** ausführen und Bescheid geben.
 
 **Drucken.** Die Schaltfläche „Drucken" gibt das Dokument an Word weiter, genau
 wie ein Rechtsklick ▸ Drucken im Explorer. Wo kein Word installiert ist, wird

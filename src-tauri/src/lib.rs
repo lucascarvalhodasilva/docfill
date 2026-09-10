@@ -10,7 +10,15 @@ use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 
 #[cfg(unix)]
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+
+/// Rechte für alles, was personenbezogene Daten trägt: nur der eigene Benutzer.
+/// Der Staging-Ordner benutzt sie seit jeher; die dauerhafte Gruppenablage trägt
+/// dieselben Daten und bekommt sie deshalb ebenso.
+#[cfg(unix)]
+const DIR_MODE: u32 = 0o700;
+#[cfg(unix)]
+const FILE_MODE: u32 = 0o600;
 
 /// Folder the user picked for a "save all" run. Held here rather than handed
 /// back to the webview, so page script still cannot name a destination.
@@ -109,6 +117,64 @@ fn group_dir(app: &tauri::AppHandle, id: &str) -> Result<PathBuf, String> {
     Ok(groups_dir(app)?.join(id))
 }
 
+/// Legt einen Ordner an, den nur der eigene Benutzer betreten darf. `recursive`
+/// heißt hier wie bei `mkdir -p`: ist er schon da, ist nichts zu tun.
+fn create_private_dir(dir: &Path) -> Result<(), String> {
+    let mut builder = DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    builder.mode(DIR_MODE);
+    builder.create(dir).map_err(|e| io_error("write", e))
+}
+
+/// Schreibt eine Datei, die nur der eigene Benutzer lesen darf. Anders als
+/// `stage()` wird hier bewusst überschrieben: dieselbe Gruppe wird beim Merken
+/// erneut abgelegt, ein `O_EXCL` würde das zweite Mal scheitern. Dass damit auch
+/// der Symlink-Schutz von `stage()` entfällt, ist hier vertretbar: die
+/// Gruppenablage liegt im Datenordner der App und trägt `0700`, während `stage()`
+/// im für alle beschreibbaren Temp-Verzeichnis arbeitet.
+fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let mut opts = OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    opts.mode(FILE_MODE);
+
+    let mut file = opts.open(path).map_err(|e| io_error("write", e))?;
+    // `mode()` greift nur beim Anlegen. Was eine ältere Fassung von Docfill mit
+    // offenen Rechten hinterlassen hat, bliebe sonst offen.
+    #[cfg(unix)]
+    let _ = file.set_permissions(fs::Permissions::from_mode(FILE_MODE));
+
+    file.write_all(bytes).map_err(|e| io_error("write", e))
+}
+
+/// Zieht die Rechte der Gruppenablage nach. Bis Fassung 0.2.1 wurde sie mit den
+/// Standardrechten des Systems angelegt — auf einem geteilten Rechner konnte ein
+/// anderer Benutzer ausgefüllte Dokumente lesen. Läuft einmal beim Start und
+/// darf dabei jederzeit ins Leere greifen.
+#[cfg(unix)]
+fn harden_groups(app: &tauri::AppHandle) {
+    let Ok(root) = groups_dir(app) else { return };
+    let _ = fs::set_permissions(&root, fs::Permissions::from_mode(DIR_MODE));
+    let Ok(entries) = fs::read_dir(&root) else { return };
+
+    for dir in entries.filter_map(|e| e.ok()).map(|e| e.path()) {
+        if !dir.is_dir() {
+            continue;
+        }
+        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(DIR_MODE));
+        let Ok(files) = fs::read_dir(&dir) else { continue };
+        for file in files.filter_map(|e| e.ok()).map(|e| e.path()) {
+            if file.is_file() {
+                let _ = fs::set_permissions(&file, fs::Permissions::from_mode(FILE_MODE));
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn harden_groups(_app: &tauri::AppHandle) {}
+
 fn dir_size(dir: &Path) -> usize {
     fs::read_dir(dir)
         .map(|entries| {
@@ -132,10 +198,13 @@ fn io_error(context: &str, e: std::io::Error) -> String {
     }
 }
 
-/// Per-run staging folder. The name is unpredictable so that nobody can
-/// pre-place a symlink at a path we are about to write to, which on a
-/// world-writable /tmp would turn a staged document into an arbitrary
-/// file overwrite. Removed again when the app exits.
+/// Per-run staging folder, one per process. The name varies per run so that two
+/// instances never share a folder — it is built from the clock and is therefore
+/// guessable, so it carries no security weight of its own (see `sign_token`,
+/// which needs the opposite and gets it elsewhere). What keeps a pre-placed
+/// symlink on a world-writable /tmp from turning a staged document into an
+/// arbitrary file overwrite is `O_EXCL` plus the symlink check in `stage()`.
+/// Removed again when the app exits, and on the next start if that never came.
 fn staging_dir() -> PathBuf {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
@@ -676,8 +745,8 @@ async fn close_form_window(
 #[tauri::command]
 async fn group_save_meta(app: tauri::AppHandle, id: String, payload: String) -> Result<(), String> {
     let dir = group_dir(&app, &id)?;
-    fs::create_dir_all(&dir).map_err(|e| io_error("write", e))?;
-    fs::write(dir.join("meta.json"), payload).map_err(|e| io_error("write", e))
+    create_private_dir(&dir)?;
+    write_private(&dir.join("meta.json"), payload.as_bytes())
 }
 
 /// One document per call — ein einzelner Aufruf mit allen Dokumenten würde
@@ -693,11 +762,11 @@ async fn group_save_doc(
         return Err("Das Dokument ist zu groß.".into());
     }
     let dir = group_dir(&app, &id)?;
-    fs::create_dir_all(&dir).map_err(|e| io_error("write", e))?;
+    create_private_dir(&dir)?;
     if dir_size(&dir) + bytes.len() > MAX_GROUP {
         return Err("Die Gruppe ist zu groß.".into());
     }
-    fs::write(dir.join(format!("{index}.docx")), bytes).map_err(|e| io_error("write", e))
+    write_private(&dir.join(format!("{index}.docx")), &bytes)
 }
 
 #[tauri::command]
@@ -1286,6 +1355,15 @@ pub fn run() {
         // und damit blieb der Ablageordner im Temp liegen und die Historie
         // wäre nicht wirklich weg gewesen.
         .setup(|app| {
+            // Einmal beim Start: was eine ältere Fassung mit offenen Rechten
+            // abgelegt hat, gehört dem eigenen Benutzer allein. Neue Ablagen
+            // entstehen über `create_private_dir`/`write_private` gar nicht
+            // erst offen.
+            harden_groups(app.handle());
+            // Verwaiste Ablageordner früherer Läufe: nach einem Absturz kommt
+            // weder der Fenster-Handler noch `RunEvent::Exit` zum Zuge, und
+            // ausgefüllte Dokumente blieben im Temp liegen.
+            wipe_orphaned_staging();
             if let Some(main) = app.get_webview_window("main") {
                 let handle = app.handle().clone();
                 main.on_window_event(move |event| {
@@ -1366,6 +1444,46 @@ pub fn run() {
 /// never have been created, because `stage()` builds it only on first use.
 fn wipe_staging() {
     let _ = fs::remove_dir_all(staging_dir());
+}
+
+/// Wie lange ein fremder Ablageordner unangetastet bleibt. Kürzer wäre riskant:
+/// eine zweite, gleichzeitig laufende Docfill-Instanz hat ihren eigenen Ordner,
+/// und dem darf man die Dateien nicht unter den Händen wegziehen. Ein Ordner,
+/// der einen Tag lang nicht angefasst wurde, gehört keiner lebenden Sitzung mehr.
+const STAGING_ORPHAN_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Räumt Ablageordner früherer Läufe weg. `wipe_staging()` erwischt nur den
+/// eigenen; stürzt Docfill ab, bleibt der jeweilige Ordner mit ausgefüllten
+/// Dokumenten liegen, und das Versprechen „nichts bleibt im Temp" gilt nur für
+/// den geordneten Weg. Darf jederzeit ins Leere greifen.
+fn wipe_orphaned_staging() {
+    let own = staging_dir();
+    let Some(temp) = own.parent().map(Path::to_path_buf) else { return };
+    let Ok(entries) = fs::read_dir(&temp) else { return };
+
+    for path in entries.filter_map(|e| e.ok()).map(|e| e.path()) {
+        if path == own {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+        if !name.starts_with("docfill-") {
+            continue;
+        }
+        // Ein untergeschobener Symlink darf nicht dazu führen, dass
+        // `remove_dir_all` anderswo aufräumt.
+        let Ok(meta) = fs::symlink_metadata(&path) else { continue };
+        if !meta.is_dir() {
+            continue;
+        }
+        let old = meta
+            .modified()
+            .ok()
+            .and_then(|m| SystemTime::now().duration_since(m).ok())
+            .is_some_and(|age| age > STAGING_ORPHAN_AGE);
+        if old {
+            let _ = fs::remove_dir_all(&path);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1523,6 +1641,76 @@ mod tests {
         assert_eq!(dmode, 0o700, "staging folder is not owner-only: {dmode:o}");
 
         let _ = fs::remove_file(&victim);
+    }
+
+    /// Das Gegenstück zum Staging-Test, für die Ablage, die das Programm
+    /// überlebt. Bis Fassung 0.2.1 entstand sie über `fs::create_dir_all` und
+    /// `fs::write`, also mit den Standardrechten des Systems — auf einem
+    /// geteilten Rechner konnte ein anderer Benutzer ausgefüllte Dokumente
+    /// lesen. Der Test hält fest, dass sie denselben Schutz trägt wie der
+    /// flüchtige Ordner.
+    #[cfg(unix)]
+    #[test]
+    fn saved_groups_are_owner_only() {
+        let dir = std::env::temp_dir().join(format!(
+            "docfill-test-groups-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        create_private_dir(&dir).unwrap();
+
+        let dmode = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dmode, 0o700, "group folder is not owner-only: {dmode:o}");
+
+        let file = dir.join("meta.json");
+        write_private(&file, b"{}").unwrap();
+        let fmode = fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(fmode, 0o600, "saved group is not owner-only: {fmode:o}");
+
+        // Erneutes Merken derselben Gruppe überschreibt — anders als `stage()`
+        // darf `write_private` das, sonst schlüge jedes zweite Speichern fehl.
+        write_private(&file, b"{\"neu\":true}").unwrap();
+        assert_eq!(fs::read(&file).unwrap(), b"{\"neu\":true}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Eine Ablage aus einer älteren Fassung liegt mit offenen Rechten da.
+    /// `harden_groups` zieht sie beim Start nach; ohne das bliebe sie für
+    /// andere Benutzer lesbar, solange die Gruppe nicht erneut gespeichert wird.
+    #[cfg(unix)]
+    #[test]
+    fn write_private_closes_permissions_of_an_existing_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "docfill-test-alt-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("0.docx");
+        fs::write(&file, b"alt").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+
+        write_private(&file, b"neu").unwrap();
+
+        let mode = fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "existing file kept open permissions: {mode:o}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Ein frischer Ordner darf nicht weggeräumt werden: er könnte einer
+    /// zweiten, gerade laufenden Docfill-Instanz gehören.
+    #[test]
+    fn orphan_cleanup_spares_recent_folders() {
+        let _guard = staging_guard();
+
+        let fremd = std::env::temp_dir().join("docfill-99999999-deadbeef");
+        fs::create_dir_all(&fremd).unwrap();
+        fs::write(fremd.join("vertrag.docx"), b"x").unwrap();
+
+        wipe_orphaned_staging();
+
+        assert!(fremd.exists(), "a fresh staging folder was removed");
+        let _ = fs::remove_dir_all(&fremd);
     }
 
     /// Deckt den Aufräumschritt ab, den der Fenster-Handler beim Schließen

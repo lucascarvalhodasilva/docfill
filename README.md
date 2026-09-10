@@ -292,7 +292,18 @@ Tauri-API dazu, dort exportieren und den Befehl erneut ausführen.
 - Zum Öffnen und Drucken werden Dokumente in einem Ordner zwischengespeichert, dessen Name pro Programmstart
   neu vergeben wird (nur für den eigenen Benutzer lesbar, `0700`/`0600`). Beim Beenden
   wird der Ordner gelöscht — ausgefüllte Verträge bleiben also nicht im Temp-Verzeichnis
-  liegen.
+  liegen. Der Name ist aus der Uhrzeit gebaut und damit ratbar; er trennt nur zwei
+  gleichzeitig laufende Sitzungen. Dass niemand über einen untergeschobenen Symlink
+  dazwischenkommt, tragen `O_EXCL` und die Symlink-Prüfung in `stage()`.
+  Stürzt Docfill ab, kommt das Aufräumen nicht dazu; der nächste Start holt es
+  für verwaiste Ordner nach, die einen Tag lang niemand angefasst hat — kürzer
+  wäre riskant, weil eine zweite laufende Sitzung ihren eigenen Ordner hat.
+- Die gemerkten Formulare sind das Einzige, was das Programm überdauert: sie liegen
+  unter `groups/` im Datenordner der App, mit den Dokumenten und den eingegebenen
+  Werten. Auch sie gehören dem eigenen Benutzer allein (`0700`/`0600`); eine Ablage,
+  die eine ältere Fassung mit offenen Rechten angelegt hat, wird beim nächsten
+  Start nachgezogen. **Verschlüsselt ist sie nicht** — wer die Platte in der Hand
+  hält, liest sie, sofern nicht das Betriebssystem sie verschlüsselt.
 - `print_document` und `open_document` arbeiten ausschließlich mit Dateien aus genau
   diesem Ordner. Alles andere wird abgewiesen, bevor LibreOffice oder die Shell es zu
   sehen bekommt.
@@ -336,8 +347,29 @@ Tauri-API dazu, dort exportieren und den Befehl erneut ausführen.
   40 MB entpackt. Das verhindert, dass eine präparierte Word-Datei den Arbeitsspeicher füllt.
 - Beim Speichern aller Dokumente wird der Zielordner einmal abgefragt und in Rust
   gehalten; die Dokumente gehen einzeln hinüber, nie alle gleichzeitig.
-- Die Vorschau im Browser rendert fremde Dokumentinhalte in einem `sandbox`-iframe
-  ohne Skriptrechte.
+- Die Vorschau rendert fremde Dokumentinhalte in einem `sandbox`-iframe ohne
+  Skriptrechte. Das betrifft nur den Browser-Weg beim Entwickeln: in der App
+  öffnet „Öffnen" das Dokument über `open_document` in Word. Genau gesagt ist
+  die **Darstellung** isoliert, nicht das Auswerten — `docx.renderAsync` läuft
+  im Hauptkontext und schreibt nur sein Ergebnis in den iframe. Was fremdes
+  Skript dort am Ausführen hindert, ist die CSP (`script-src 'self'`).
+- Fremdes OOXML wird in der Oberfläche ausgewertet, nicht in Rust: JSZip packt
+  aus, `DOMParser` liest das XML. Beide liegen als Datei in `src/vendor/` und
+  sind über `SHA256SUMS` festgeschrieben; `npm run check` vergleicht sie bei
+  jedem Bau. Ob eine bekannte Lücke gemeldet ist, sagt das nicht — dafür laufen
+  `cargo audit` und Dependabot.
+
+### Verteilung
+- Die Installationsdateien sind **nicht signiert** — ein Zertifikat ist nicht gekauft,
+  deshalb warnt Windows beim ersten Start. Statt der Signatur liegt jedem Release
+  eine `SHA256SUMS.txt` bei; wie man vergleicht, steht in
+  [BUILD-WINDOWS.md](BUILD-WINDOWS.md).
+- Es gibt **keinen Aktualisierungsdienst**. Eine Korrektur erreicht einen Rechner
+  erst, wenn jemand den Installer neu aus dem Release holt. Welche Fassung läuft,
+  steht unten rechts im Fenster — das ist der einzige Weg, eine veraltete
+  Installation zu bemerken.
+- Bevor gebaut wird, laufen die Tests, `cargo audit` und die Prüfung der
+  Oberfläche. Dependabot meldet neue Fassungen für Cargo, npm und die Actions.
 
 ### Unterschrift vom Tablet
 - Der Server läuft **nur im lokalen Netz** und **nur**, solange der Dialog offen ist. Es gibt
@@ -347,6 +379,10 @@ Tauri-API dazu, dort exportieren und den Befehl erneut ausführen.
 - **Das Dokument verlässt den Rechner nicht.** Ausgeliefert wird ausschließlich die eine
   einkompilierte Unterschriftsseite; der Server kennt keinen Pfad aus der Anfrage und kann
   strukturell nichts anderes herausgeben. Hinaus geht der Dateiname, herein kommt ein Bild.
+- Was hereinkommt, muss ein PNG sein: geprüft werden der Kopf der `data:`-Adresse
+  und die acht Bytes, mit denen jede PNG-Datei beginnt. Eingebettet wird es als
+  `word/media/*.png`, also wird auch verlangt, dass es eines ist — wer das Zeichen
+  hat, soll nicht beliebige Bytes ins Dokument legen können.
 - Der Link trägt ein Zeichen aus 128 Bit vom Zufallsgenerator des Browsers, gilt zehn Minuten
   und ist nach der ersten Unterschrift verbraucht. Alles andere — falsches Zeichen, abgelaufen,
   bereits benutzt — bekommt dieselbe nichtssagende Antwort. Nach zwanzig Fehlgriffen ist die

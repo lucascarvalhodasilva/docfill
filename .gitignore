@@ -13,3 +13,7 @@ src-tauri/gen/schemas/
 ._*
 Thumbs.db
 desktop.ini
+
+# Zugangsdaten haben im Baum nichts zu suchen — das Repo ist öffentlich.
+.env
+.env.*

@@ -11,8 +11,12 @@
 //   * Importe, die ins Leere zeigen (falscher Pfad, Datei fehlt)
 //   * benannte Importe, die es im Modul gar nicht gibt
 //
+//   * mitgelieferte Bibliotheken, die nicht mehr zu src/vendor/SHA256SUMS passen
+//
 // Was NICHT auffällt: Laufzeitfehler. Ein Feld, das es nicht gibt, oder eine
-// Bedingung, die falsch herum steht, findet nur das Ausprobieren.
+// Bedingung, die falsch herum steht, findet nur das Ausprobieren. Und die
+// Prüfsummen sagen, dass eine Bibliothek unverändert ist — nicht, dass sie
+// fehlerfrei ist. Dafür ist der Audit-Schritt im Bauplan da.
 //
 // Es wird nichts geschrieben (`write: false`) und nichts in src/ abgelegt —
 // alles, was dort liegt, landet sonst im Installer.
@@ -20,6 +24,7 @@
 import { build } from "esbuild";
 import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
@@ -54,8 +59,42 @@ async function checkPage(file) {
   return problems;
 }
 
+// Die beiden fremden Bibliotheken liegen als Datei im Baum, nicht in
+// package.json — kein Installationsschritt prüft sie also. Bisher stand die
+// Kontrolle nur als Befehl im README und hing damit am Gedächtnis. Hier läuft
+// sie bei jedem Bau mit, weil `beforeBuildCommand` dieses Skript aufruft.
+async function checkVendor() {
+  const dir = path.join(SRC, "vendor");
+  let sums;
+  try {
+    sums = await readFile(path.join(dir, "SHA256SUMS"), "utf8");
+  } catch {
+    return ["src/vendor/SHA256SUMS fehlt — die mitgelieferten Bibliotheken sind ungeprüft"];
+  }
+
+  const problems = [];
+  for (const line of sums.split("\n")) {
+    const treffer = line.trim().match(/^([0-9a-f]{64})\s+(\S+)$/);
+    if (!treffer) continue;
+    const [, erwartet, datei] = treffer;
+    try {
+      const inhalt = await readFile(path.join(dir, datei));
+      const ist = createHash("sha256").update(inhalt).digest("hex");
+      if (ist !== erwartet) {
+        problems.push(`src/vendor/${datei}: Prüfsumme weicht ab (erwartet ${erwartet.slice(0, 12)}…, ist ${ist.slice(0, 12)}…)`);
+      }
+    } catch {
+      problems.push(`src/vendor/${datei}: steht in SHA256SUMS, fehlt aber`);
+    }
+  }
+  return problems;
+}
+
 const pages = (await readdir(SRC)).filter(f => f.endsWith(".html")).sort();
-const problems = (await Promise.all(pages.map(checkPage))).flat();
+const problems = [
+  ...(await Promise.all(pages.map(checkPage))).flat(),
+  ...(await checkVendor()),
+];
 
 if (problems.length) {
   console.error("Die Oberfläche hat Fehler — es wird nicht gebaut:\n");
@@ -64,3 +103,4 @@ if (problems.length) {
   process.exit(1);
 }
 console.log(`Oberfläche geprüft: ${pages.join(", ")} — in Ordnung.`);
+console.log("Mitgelieferte Bibliotheken: Prüfsummen stimmen.");

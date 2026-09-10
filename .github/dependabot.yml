@@ -1,0 +1,27 @@
+# Docfill wird unsigniert und ohne Updater verteilt: eine Korrektur erreicht die
+# Rechner nur, wenn jemand den Installer neu vom Release holt. Umso wichtiger
+# ist, dass eine bekannte Lücke hier auffällt und nicht erst dort.
+version: 2
+updates:
+  # Die Oberfläche bringt JSZip und docx-preview als Datei mit (src/vendor/,
+  # über SHA256SUMS festgeschrieben) — die sieht Dependabot nicht. Hier stehen
+  # nur die Bauwerkzeuge.
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+
+  # Das eigentliche Gewicht: hinter `tauri` hängen knapp 500 Kisten.
+  - package-ecosystem: cargo
+    directory: "/src-tauri"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+
+  # Der Bauplan hat `contents: write`. Eine übernommene Action hätte damit
+  # Schreibrecht auf die Releases.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly

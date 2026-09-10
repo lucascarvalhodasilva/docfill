@@ -357,8 +357,16 @@
 <iframe id="printFrame" sandbox="allow-same-origin allow-modals"></iframe>
 
 <script type="module">
-// Private module import. Nothing is attached to window, so injected script has
-// no handle on the IPC bridge or the filesystem API.
+// Private module import: nichts von hier hängt am `window`, ein anderes Skript
+// in dieser Seite käme also nicht an `invoke` heran.
+//
+// Das ist Ordnung, keine Absicherung. `window.__TAURI_INTERNALS__` gibt es
+// unabhängig von `withGlobalTauri: false` — direkt darüber erreichte
+// eingeschleuster Code alle Befehle. Was das verhindert, ist die CSP in
+// tauri.conf.json (`script-src 'self'`, kein `unsafe-inline`): fremdes Skript
+// kommt gar nicht erst zur Ausführung. Die Capabilities begrenzen daneben, was
+// überhaupt zu erreichen wäre — Dateisystem, Dialoge und Shell sind für die
+// Oberfläche nicht freigegeben.
 import { invoke, listen } from "./vendor/tauri-api.js";
 import { renderFields, collectValues, emptyText, esc } from "./form-ui.js";
 import { defineMenu, openMenu, closeMenu, menuOpenFor } from "./menu-ui.js";
@@ -1947,12 +1955,24 @@ $("signDlg").addEventListener("close", () => {
   if (native) invoke("sign_cancel").catch(() => {});
 });
 
+// Die acht Bytes, mit denen jede PNG-Datei beginnt.
+const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+// Was hier ankommt, kommt aus dem Netz: wer das Einmal-Zeichen hat, schickt den
+// Rumpf, den er will. Eingebettet wird das Ergebnis als word/media/*.png — also
+// wird auch geprüft, dass es eines ist, statt alles zu nehmen, was hinter dem
+// ersten Komma steht. Der Kopf muss stimmen und die Bytes müssen es auch.
 function dataUrlBytes(url) {
-  const komma = String(url || "").indexOf(",");
-  if (komma < 0) throw new Error("Die Unterschrift kam unlesbar an.");
-  const roh = atob(url.slice(komma + 1));
+  const s = String(url || "");
+  if (!s.startsWith("data:image/png;base64,")) throw new Error("Die Unterschrift kam unlesbar an.");
+  let roh;
+  try { roh = atob(s.slice("data:image/png;base64,".length)); }
+  catch { throw new Error("Die Unterschrift kam unlesbar an."); }
   const out = new Uint8Array(roh.length);
   for (let i = 0; i < roh.length; i++) out[i] = roh.charCodeAt(i);
+  if (out.length < PNG_MAGIC.length || PNG_MAGIC.some((b, i) => out[i] !== b)) {
+    throw new Error("Die Unterschrift kam unlesbar an.");
+  }
   return out;
 }
 
