@@ -37,11 +37,11 @@ Auch hier läuft die Prüfung zuerst — Tests, `cargo audit`, Oberfläche. Ist 
 etwas rot, entsteht kein Release.
 
 ```bash
-git tag v0.2.1
-git push origin v0.2.1
+git tag v0.2.2
+git push origin v0.2.2
 ```
 
-Danach steht unter **Releases** `Docfill_0.2.1_x64-setup.exe` samt `.msi` und
+Danach steht unter **Releases** `Docfill_0.2.2_x64-setup.exe` samt `.msi` und
 der `SHA256SUMS.txt` zum Gegenprüfen.
 
 ## Der andere Weg: von Hand auf einem Windows-Rechner
@@ -88,12 +88,12 @@ Spätere Durchläufe brauchen ein bis zwei Minuten.
 Die fertige Installationsdatei liegt hier:
 
 ```
-src-tauri\target\release\bundle\nsis\Docfill_0.2.1_x64-setup.exe
+src-tauri\target\release\bundle\nsis\Docfill_0.2.2_x64-setup.exe
 ```
 
 Diese eine Datei auf den USB-Stick kopieren — mehr wird nicht gebraucht.
 
-Daneben entstehen noch `...\bundle\msi\Docfill_0.2.1_x64_en-US.msi` (für eine
+Daneben entstehen noch `...\bundle\msi\Docfill_0.2.2_x64_en-US.msi` (für eine
 zentrale Verteilung durch die IT) und `src-tauri\target\release\docfill.exe`
 (die Anwendung ohne Installation). Für den Test genügt die Datei aus `nsis`.
 
@@ -103,7 +103,7 @@ zentrale Verteilung durch die IT) und `src-tauri\target\release\docfill.exe`
 
 Dieser Abschnitt kann als Textdatei mit auf den Stick gelegt werden.
 
-**Installation.** `Docfill_0.2.1_x64-setup.exe` doppelklicken. Die Installation
+**Installation.** `Docfill_0.2.2_x64-setup.exe` doppelklicken. Die Installation
 erfolgt nur für das eigene Benutzerkonto, ein Administratorkennwort wird nicht
 gebraucht. Danach steht Docfill im Startmenü; deinstallieren lässt es sich unter
 *Einstellungen ▸ Apps* wie jedes andere Programm.
@@ -119,7 +119,7 @@ Datei `SHA256SUMS.txt`. Die Zeile für den eigenen Installer mit dem vergleichen
 was dieser Befehl in der Eingabeaufforderung ausgibt:
 
 ```
-certutil -hashfile Docfill_0.2.1_x64-setup.exe SHA256
+certutil -hashfile Docfill_0.2.2_x64-setup.exe SHA256
 ```
 
 Stimmen die beiden Zeichenfolgen überein, ist die Datei unverändert. Stimmen sie
