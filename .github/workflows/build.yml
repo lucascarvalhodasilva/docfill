@@ -165,7 +165,12 @@ jobs:
             $summe = (Get-FileHash $d.FullName -Algorithm SHA256).Hash.ToLower()
             "$summe  $($d.Name)"
           }
-          $zeilen | Set-Content -Path "$ziel/SHA256SUMS.txt" -Encoding ascii
+          # Bewusst nicht `Set-Content`: das schreibt unter Windows CRLF, und
+          # dann hängt ein \r am Dateinamen. `shasum -a 256 -c SHA256SUMS.txt`
+          # findet die Datei damit nicht — was auffällt, sobald jemand die .msi
+          # unter Linux oder macOS gegenprüft statt mit certutil.
+          $inhalt = ($zeilen -join "`n") + "`n"
+          [System.IO.File]::WriteAllText("$ziel/SHA256SUMS.txt", $inhalt, [System.Text.UTF8Encoding]::new($false))
           Get-Content "$ziel/SHA256SUMS.txt"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
