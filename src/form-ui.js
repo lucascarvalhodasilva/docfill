@@ -9,12 +9,64 @@
 export function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
-export function toISO(s) { const d = new Date(s); return isNaN(d) ? "" : d.toISOString().slice(0, 10); }
-export function fromISO(s) { const [y, m, d] = s.split("-"); return new Date(y, m - 1, d).toLocaleDateString("de-DE"); }
+/* ---------- Datum ----------
+   Im Eingabefeld steht ein Datum immer als JJJJ-MM-TT; ins Dokument geht es in
+   dem Format, das die Vorlage im Feld angibt (w:dateFormat) oder das im
+   Zahnrad-Fenster eingestellt wurde. */
+
+// Die gängigen Formate für die Auswahlliste im Zahnrad-Fenster. Words Kürzel,
+// damit das Eingestellte auch dann noch stimmt, wenn es in die Vorlage
+// geschrieben wird.
+export const DATE_FORMATS = [
+  { val: "dd.MM.yyyy",    zeigt: "15.03.2026" },
+  { val: "d.M.yyyy",      zeigt: "15.3.2026" },
+  { val: "dd.MM.yy",      zeigt: "15.03.26" },
+  { val: "yyyy-MM-dd",    zeigt: "2026-03-15" },
+  { val: "d. MMMM yyyy",  zeigt: "15. März 2026" },
+  { val: "MMMM yyyy",     zeigt: "März 2026" },
+];
+export const DATE_DEFAULT = "dd.MM.yyyy";
+
+const MONATE = ["Januar", "Februar", "März", "April", "Mai", "Juni",
+                "Juli", "August", "September", "Oktober", "November", "Dezember"];
+
+/** Ein getipptes oder im Dokument stehendes Datum nach JJJJ-MM-TT. */
+export function toISO(s) {
+  const t = String(s ?? "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
+  // 15.03.2026, 15.3.2026, 15/03/2026 — `new Date` liest das im Deutschen
+  // falsch oder gar nicht und lieferte bisher ein leeres Feld.
+  const m = /^(\d{1,2})[.\/](\d{1,2})[.\/](\d{4})$/.exec(t);
+  const zwei = n => String(n).padStart(2, "0");
+  if (m) return `${m[3]}-${zwei(m[2])}-${zwei(m[1])}`;
+  const d = new Date(t);
+  return isNaN(d) ? "" : d.toISOString().slice(0, 10);
+}
+
+/** JJJJ-MM-TT in das Format der Vorlage. */
+export function fromISO(s, format) {
+  const [y, m, d] = String(s ?? "").split("-").map(Number);
+  if (!y || !m || !d) return "";
+  const zwei = n => String(n).padStart(2, "0");
+  // In einem Durchgang ersetzen, das längste Kürzel zuerst: nacheinander würde
+  // `M` den soeben eingesetzten Monatsnamen gleich wieder zerlegen.
+  return (format || DATE_DEFAULT).replace(/yyyy|yy|MMMM|MM|M|dd|d/g, t => ({
+    yyyy: String(y), yy: zwei(y % 100),
+    MMMM: MONATE[m - 1], MM: zwei(m), M: String(m),
+    dd: zwei(d), d: String(d),
+  })[t]);
+}
 
 // Auch von keys-ui.js benutzt: die Zahnrad-Liste nennt denselben Feldtyp
 // wie das Formular, sonst hieße dasselbe Steuerelement zweimal verschieden.
-export const TYPE_LABEL = { text: "Text", rich: "Text", date: "Datum", dropdown: "Liste", combo: "Liste", checkbox: "", picture: "Unterschrift" };
+//
+// Die Namen unterscheiden, was Word unterscheidet: eine Auswahlliste lässt nur
+// die vorgegebenen Einträge zu, ein Kombinationsfeld auch eigene. Wer das nicht
+// weiß, tippt in ein Feld, das gar nichts annimmt.
+export const TYPE_LABEL = {
+  text: "Text", multi: "Text, mehrzeilig", rich: "Rich Text", date: "Datum",
+  dropdown: "Auswahlliste", combo: "Liste, auch frei", checkbox: "", picture: "Unterschrift",
+};
 
 /**
  * In wie vielen Dokumenten der Gruppe das Feld steht. Beim Ausfüllen ist das
@@ -48,17 +100,60 @@ export function renderFields(container, fields, values) {
     const meta = [TYPE_LABEL[f.type], f.count > 1 ? `${f.count} Stellen` : "", docsText(f)].filter(Boolean).join(" · ");
     let c;
     if (f.type === "checkbox") {
-      w.innerHTML = `<label class="check"><input type="checkbox" id="${id}" data-key="${key}" ${/☒|☑/.test(cur) ? "checked" : ""}> ${esc(f.title)}${meta ? `<span class="meta">${esc(meta)}</span>` : ""}</label>`;
+      // Angekreuzt ist, was die Vorlage dafür hält: sie bestimmt das Zeichen,
+      // nicht wir. ☑ bleibt als zweite Möglichkeit stehen, weil manche Vorlage
+      // es benutzt, ohne es im w14:checkedState zu nennen.
+      const an = f.checked || "☒";
+      w.innerHTML = `<label class="check"><input type="checkbox" id="${id}" data-key="${key}" ${cur.includes(an) || /☒|☑/.test(cur) ? "checked" : ""}> ${esc(f.title)}${meta ? `<span class="meta">${esc(meta)}</span>` : ""}</label>`;
     } else {
-      if (f.type === "date") c = `<input type="date" id="${id}" data-key="${key}" value="${toISO(cur)}">`;
-      else if (f.type === "dropdown") c = `<select id="${id}" data-key="${key}"><option value="">— auswählen —</option>${f.options.map(o => `<option ${o === cur ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`;
-      else if (f.type === "combo") c = `<input type="text" id="${id}" data-key="${key}" list="${id}l" placeholder="${hint}" value="${esc(cur)}"><datalist id="${id}l">${f.options.map(o => `<option value="${esc(o)}">`).join("")}</datalist>`;
-      else if (f.type === "rich") c = `<textarea id="${id}" data-key="${key}" placeholder="${hint}">${esc(cur)}</textarea>`;
+      // Jeder Feldtyp bekommt seine eigene Gestalt. Ein Umschlag mit einer
+      // Klasse trägt das Zeichen rechts im Feld (siehe app.css): der Pfeil sagt
+      // „hier klappt etwas auf", ohne dass ein Bild nachgeladen werden müsste.
+      if (f.type === "date")
+        c = `<span class="wrap datum"><input type="date" id="${id}" data-key="${key}" value="${toISO(cur)}"></span>`;
+      // Bringt die Vorlage selbst eine „nichts gewählt"-Zeile mit (ein
+      // Listeneintrag ohne w:value), dann ist sie der Platzhalter — und steht
+      // nicht ein zweites Mal zwischen den Antworten.
+      else if (f.type === "dropdown") {
+        const antworten = f.options.filter(o => o !== f.optionLeer);
+        c = `<span class="wrap liste"><select id="${id}" data-key="${key}"><option value="">${esc(f.optionLeer || "— auswählen —")}</option>${antworten.map(o => `<option ${o === cur ? "selected" : ""}>${esc(o)}</option>`).join("")}</select></span>`;
+      }
+      else if (f.type === "combo") {
+        // Im Kombinationsfeld ist der Platzhalter kein Vorschlag, sondern der
+        // graue Text im leeren Feld — Words eigener Hinweis geht vor.
+        const antworten = f.options.filter(o => o !== f.optionLeer);
+        const grau = hint || esc(f.optionLeer) || "wählen oder eintippen";
+        c = `<span class="wrap liste frei"><input type="text" id="${id}" data-key="${key}" list="${id}l" placeholder="${grau}" value="${esc(cur)}"><datalist id="${id}l">${antworten.map(o => `<option value="${esc(o)}">`).join("")}</datalist></span>`;
+      }
+      else if (f.type === "rich" || f.type === "multi")
+        c = `<textarea id="${id}" data-key="${key}" placeholder="${hint}">${esc(cur)}</textarea>`;
       else c = `<input type="text" id="${id}" data-key="${key}" placeholder="${hint}" value="${esc(cur)}">`;
       w.innerHTML = `<label class="t" for="${id}">${esc(f.title)}<span class="meta">${meta}</span></label>${c}`;
     }
     container.appendChild(w);
   });
+}
+
+/**
+ * Wie viele Felder noch leer sind. Beide Wege ins Ausfüllen — das
+ * Formularfenster und der Ersatzdialog — fragen hier, damit sie dasselbe zählen.
+ *
+ * Leer heißt: `collectValues` hat für den Schlüssel nichts geliefert, im
+ * Dokument bleibt dort also stehen, was die Vorlage vorgibt. Ein Ankreuzfeld
+ * liefert immer ☒ oder ☐ und ist deshalb nie leer; eine Auswahlliste auf ihrer
+ * „nichts gewählt"-Zeile liefert nichts und zählt mit. Beides ergibt sich von
+ * selbst aus `collectValues`, ohne Sonderfall.
+ */
+export function countEmpty(container, fields) {
+  const werte = collectValues(container, fields);
+  const alle = fields || [];
+  return { leer: alle.filter(f => !(f.key in werte)).length, gesamt: alle.length };
+}
+
+/** „3 von 8 Feldern noch leer“ — leer, solange nichts fehlt. */
+export function emptyText(container, fields) {
+  const { leer, gesamt } = countEmpty(container, fields);
+  return leer ? `${leer} von ${gesamt} Feld${gesamt === 1 ? "" : "ern"} noch leer` : "";
 }
 
 /**
@@ -72,8 +167,10 @@ export function collectValues(container, fields) {
   for (const el of container.querySelectorAll("[data-key]")) {
     const f = byKey.get(el.dataset.key);
     if (!f) continue;
-    const v = f.type === "checkbox" ? (el.checked ? "☒" : "☐")
-      : f.type === "date" && el.value ? fromISO(el.value)
+    // Zeichen und Datumsformat kommen aus der Vorlage bzw. aus dem
+    // Zahnrad-Fenster — hier steht nichts Festes mehr.
+    const v = f.type === "checkbox" ? (el.checked ? (f.checked || "☒") : (f.unchecked || "☐"))
+      : f.type === "date" && el.value ? fromISO(el.value, f.format)
       : el.value;
     if (v !== "") values[f.key] = v;
   }

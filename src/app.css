@@ -47,6 +47,44 @@ input[type=text]:hover,input[type=date]:hover,select:hover,textarea:hover { bord
 textarea { min-height:54px; resize:vertical }
 /* Words Platzhaltertext, grau: benennt das Feld, ist aber kein Wert */
 input::placeholder, textarea::placeholder { color:var(--muted); opacity:1 }
+
+/* ---- die Feldtypen auseinanderhalten ----
+   Ein Auswahlfeld, ein Datum und ein Textfeld sahen bisher gleich aus: dieselbe
+   Umrandung, derselbe Grund. Man sah einem Feld nicht an, ob es etwas annimmt,
+   was man tippt. Das Zeichen rechts im Feld kommt aus der Schrift, nicht aus
+   einer Bilddatei — die Content-Security-Policy verbietet Nachladen, und ein
+   data:-URI im Stylesheet wäre schwerer zu pflegen als ein Buchstabe. */
+.wrap { position:relative; display:block }
+.wrap.liste { max-width:300px } .wrap.datum { max-width:190px }
+.wrap > input, .wrap > select { width:100% }
+.wrap::after {
+  position:absolute; right:1px; top:1px; bottom:1px; width:26px;
+  display:flex; align-items:center; justify-content:center;
+  pointer-events:none;   /* der Klick gehört dem Feld darunter */
+  color:var(--muted); font-size:11px; border-radius:0 var(--r-sm) var(--r-sm) 0;
+  transition:color var(--dur) var(--ease) }
+.wrap:hover::after { color:var(--accent) }
+
+/* Auswahlliste: nur die vorgegebenen Einträge. Der eigene Pfeil sitzt in einem
+   abgesetzten Feld — das ist die Fläche, die man anklickt. */
+.wrap.liste::after { content:"▾"; font-size:13px; background:var(--raised);
+  border-left:1px solid var(--field-line) }
+.wrap.liste > select { appearance:none; -webkit-appearance:none; padding-right:34px; cursor:pointer }
+
+/* Kombinationsfeld: dasselbe Aufklappen, aber man darf auch tippen. Deshalb
+   bleibt der Textcursor, und der Pfeilkasten ist nicht abgesetzt, sondern nur
+   angedeutet — sonst verspräche er, dass nichts anderes ginge. */
+.wrap.liste.frei::after { background:none; border-left:1px dashed var(--field-line) }
+.wrap.liste.frei > input { padding-right:34px }
+
+/* Datum: hier zeichnet der Browser selbst genug — die Kalenderschaltfläche und
+   die Abschnitte TT.MM.JJJJ. Ein eigenes Zeichen käme daneben zu stehen und
+   sähe nach zwei Schaltflächen aus, von denen nur eine geht. Es bleibt bei der
+   schmalen Breite: ein Datum ist kürzer als ein Satz, und das sieht man ihm an. */
+.wrap.datum::after { content:none }
+
+/* Mehrzeilig: schon an der Höhe zu erkennen, den Rest macht der Anfasser unten
+   rechts, den der Browser selbst zeichnet. */
 input[type=date] { max-width:190px } select { max-width:300px }
 .check { display:flex; align-items:center; gap:8px; cursor:pointer }
 input[type=checkbox] { width:15px; height:15px; margin:0; flex:none; accent-color:var(--accent-solid) }
@@ -95,6 +133,11 @@ button.link:disabled { opacity:.4; cursor:default }
 .result .badge { flex:none; font-size:11px; line-height:1; padding:3px 7px; border-radius:999px;
                  color:var(--ok); background:color-mix(in srgb, var(--ok) 16%, transparent) }
 .result .badge::before { content:"✓ " }
+/* Leer gebliebene Felder: kein Fehler — das Dokument ist fertig, an
+   diesen Stellen steht nur noch, was die Vorlage vorgibt. Deshalb warnend und
+   nicht rot. Das ::before muss mit, sonst bliebe der Haken von oben stehen. */
+.result .badge.warn { color:var(--warn); background:color-mix(in srgb, var(--warn) 16%, transparent) }
+.result .badge.warn::before { content:"! " }
 .result .x { display:grid; place-items:center; width:26px; height:26px; flex:none; padding:0; font-size:12px;
              background:none; border:0; border-radius:var(--r-sm); color:var(--muted); cursor:pointer;
              transition:color var(--dur) var(--ease), background var(--dur) var(--ease) }
@@ -181,15 +224,50 @@ button.link:disabled { opacity:.4; cursor:default }
 .ctrl { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:4px 8px; padding:9px 0 }
 .ctrl:first-of-type { padding-top:0 }
 .ctrl + .ctrl { box-shadow:0 -1px 0 var(--line) }
-.ctrl .check { grid-column:1; min-width:0 }
-.ctrl .check .t { font-weight:600; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
-/* Abgewählt bleibt lesbar, tritt aber zurück — wie die abgewählte Datei in der
-   Dokumentliste (li.file). */
-.ctrl:has(input[data-k=on]:not(:checked)) .check .t,
-.ctrl:has(input[data-k=on]:not(:checked)) .meta { color:var(--muted) }
-.ctrl .meta { grid-column:2; justify-self:end; align-self:center; color:var(--muted); flex:none }
-.ctrl .k { grid-column:1 / -1; font-size:12px; color:var(--muted) }
+/* Kopfzeile der Zeile: Feldtyp und Haken stehen beide rechts, als ein Block
+   Nebenangaben. Links bleibt frei — dort begänne sonst eine Beschriftung an
+   genau der Stelle, an der man den Namen des Steuerelements erwartet, und
+   würde prompt für einen gehalten. Den Namen trägt der Schlüssel darunter. */
+.ctrl .meta { grid-column:1; justify-self:end; align-self:center; color:var(--muted); min-width:0 }
+.ctrl .check { grid-column:2; justify-self:end; align-self:center; gap:6px;
+               color:var(--muted); white-space:nowrap }
+/* Abgewählt tritt zurück — wie die abgewählte Datei in der Dokumentliste
+   (li.file). Der Haken selbst bleibt kräftig: er ist das, was man dann
+   anklicken will. */
+.ctrl:has(input[data-k=on]:not(:checked)) .meta,
+.ctrl:has(input[data-k=on]:not(:checked)) .k,
+.ctrl:has(input[data-k=on]:not(:checked)) input[data-k=key],
+.ctrl:has(input[data-k=on]:not(:checked)) .opt { opacity:.5 }
 .ctrl input[data-k=key] { grid-column:1 / -1 }
+
+/* Im Zahnrad-Fenster steht nichts in einer eigenen Schriftgröße: die Zeilen
+   zeigen dieselben Beschriftungen und Eingabefelder wie das Formularfenster,
+   und 12px neben 13px in derselben Zeile fällt auf, ohne etwas zu bedeuten.
+   Unterschieden wird über Farbe und Gewicht, nicht über die Größe. */
+
+/* ---- Einstellungen je Feldtyp ----
+   Listeneinträge, Datumsformat, Ankreuz-Zeichen. Der Block steht eingerückt
+   unter dem Schlüssel und gehört sichtbar zu diesem Steuerelement, deshalb die
+   Linie an seiner linken Kante — ohne sie schwämme er zwischen zwei Feldern. */
+.ctrl .k { grid-column:1 / -1; color:var(--muted) }
+.ctrl .opt { grid-column:1 / -1; margin-top:5px; padding-left:9px;
+  border-left:2px solid var(--line); display:flex; flex-direction:column; gap:4px; align-items:flex-start }
+.ctrl .opt .lbl { color:var(--muted) }
+.ctrl .eintraege { display:flex; flex-direction:column; gap:4px; width:100%; max-width:380px }
+.ctrl .eintrag { display:flex; gap:6px; align-items:center }
+.ctrl .eintrag input { flex:1; min-width:0 }
+/* Das Kreuz der Zeile: dieselbe Gestalt wie das Entfernen in der Dokumentliste,
+   damit man es nicht neu lernen muss. */
+.ctrl .eintrag .x { flex:none; width:24px; height:24px; padding:0; line-height:1;
+  border-color:transparent; background:none; color:var(--muted) }
+.ctrl .eintrag .x::before { content:"\00d7"; font-size:15px }
+.ctrl .eintrag .x:hover { border-color:var(--field-line); color:var(--ink) }
+.ctrl .opt .add { padding:3px 8px }
+/* Die zwei Zeichen nebeneinander: das Feld muss nur ein Zeichen fassen, ein
+   breites Eingabefeld verspräche einen ganzen Text. */
+.ctrl .opt.zeichen { flex-direction:row; align-items:center; gap:6px; flex-wrap:wrap }
+.ctrl .opt.zeichen input { width:44px; text-align:center; flex:none }
+.ctrl .opt.zeichen .lbl + input { margin-right:6px }
 
 /* Der Unterschrifts-Dialog: der QR-Code steht mittig, die Adresse darunter
    klein und umbrechend — sie ist lang und wird nur zur Not abgetippt. */

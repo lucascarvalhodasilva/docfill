@@ -108,4 +108,6 @@ LibreOffice benutzt; fehlt auch das, stattdessen „Öffnen" verwenden und von d
 drucken.
 
 **Die Originaldokumente werden nie verändert.** Docfill legt immer neue Dateien
-mit der Endung `_ausgefuellt.docx` an.
+mit der Endung `_ausgefuellt.docx` an — bei einer makrofähigen Ausgangsdatei
+`_ausgefuellt.docm`. Aus einer Vorlage (`.dotx`, `.dotm`) wird dabei ein Dokument;
+die Vorlage selbst bleibt unverändert liegen.

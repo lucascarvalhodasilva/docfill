@@ -32,7 +32,12 @@
 
   /* Fußzeile wie im Hauptfenster: gleiche Linie, gleiche Höhe, und die
      Hauptaktion nimmt den freien Platz statt eines Abstandhalters. */
-  footer { margin:0 14px; padding-top:9px; border-top:1px solid var(--line) }
+  /* Die Zählung der leeren Felder steht über der Schaltflächenzeile, nicht
+     neben ihr: #status trägt dort „Wird ausgefüllt…" und Fehler, die beiden
+     würden einander überschreiben. */
+  footer { margin:0 14px; padding-top:9px; border-top:1px solid var(--line);
+           display:flex; flex-direction:column; gap:8px }
+  #leer { color:var(--muted); min-height:1.45em }
   footer .row button { padding-block:7px }
   footer .row .primary { flex:1 }
   .empty { color:var(--muted); display:flex; flex-direction:column; align-items:center; justify-content:center;
@@ -44,6 +49,7 @@
 <h2>Formular<span class="meta" id="formMeta"></span></h2>
 <div id="form"></div>
 <footer>
+  <span id="leer" role="status" aria-live="polite"></span>
   <div class="row"><span id="status" role="status" aria-live="polite"></span>
     <button id="cancel">Abbrechen</button>
     <button id="fill" class="primary" disabled>Ausgewählte Dokumente ausfüllen</button></div>
@@ -54,7 +60,7 @@
 // schickt die eingegebenen Werte zurück. Die Dokumentinhalte bleiben im
 // Hauptfenster — sie wären über die IPC-Grenze hinweg viel zu groß.
 import { invoke } from "./vendor/tauri-api.js";
-import { renderFields, collectValues } from "./form-ui.js";
+import { renderFields, collectValues, emptyText } from "./form-ui.js";
 
 const $ = id => document.getElementById(id);
 function setStatus(m, err) { const s = $("status"); s.textContent = m; s.className = err ? "error" : ""; }
@@ -67,11 +73,17 @@ let groupId = null;   // wird unverändert zurückgeschickt, damit das Hauptfens
 // Fensters überleben und beim erneuten Öffnen wieder dastehen.
 let saveTimer = 0;
 function cacheNow() {
+  zaehleLeer();
   clearTimeout(saveTimer);
   if (!fields.length) return;
   invoke("form_cache_values", { payload: payloadNow() }).catch(() => {});
 }
-function cacheSoon() { clearTimeout(saveTimer); saveTimer = setTimeout(cacheNow, 300); }
+function cacheSoon() { zaehleLeer(); clearTimeout(saveTimer); saveTimer = setTimeout(cacheNow, 300); }
+
+// Wie viele Felder noch leer sind. Hängt an denselben Listenern, die
+// ohnehin schon die Werte zwischenspeichern — ein dritter wäre nur eine weitere
+// Stelle, die man beim nächsten Umbau vergessen kann.
+function zaehleLeer() { $("leer").textContent = emptyText($("form"), fields); }
 function payloadNow() {
   return JSON.stringify({ id: groupId, fields, meta: $("formMeta").textContent, values: collectValues($("form"), fields) });
 }
@@ -91,6 +103,7 @@ async function load() {
   }
   renderFields($("form"), fields, data.values || {});
   $("fill").disabled = false;
+  zaehleLeer();
   $("form").addEventListener("input", cacheSoon);
   // change und blur sofort sichern: wer direkt danach das Fenster schließt,
   // soll die letzten Eingaben nicht verlieren

@@ -206,6 +206,19 @@ fn stage(name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// Beschriftung des Dateifilters. Eine nackte Endung in Großbuchstaben wäre in
+/// einem sonst deutschen Dialog ein Fremdkörper.
+fn filter_label(ext: &str) -> String {
+    match ext {
+        "docx" => "Word-Dokument".into(),
+        "docm" => "Word-Dokument mit Makros".into(),
+        "dotx" => "Word-Vorlage".into(),
+        "dotm" => "Word-Vorlage mit Makros".into(),
+        // Der Ersatzdialog im Browser speichert auch einmal ein .zip.
+        _ => ext.to_uppercase(),
+    }
+}
+
 /// Native "save as" dialog. Runs here rather than in the webview so that the
 /// destination is chosen by the user, never named by page script.
 fn ask_save_path(app: &tauri::AppHandle, name: &str) -> Option<PathBuf> {
@@ -218,7 +231,7 @@ fn ask_save_path(app: &tauri::AppHandle, name: &str) -> Option<PathBuf> {
     app.dialog()
         .file()
         .set_file_name(name)
-        .add_filter(ext.to_uppercase(), &[ext.as_str()])
+        .add_filter(filter_label(&ext), &[ext.as_str()])
         .save_file(move |picked| {
             let _ = tx.send(picked);
         });
@@ -231,7 +244,11 @@ fn ask_open_paths(app: &tauri::AppHandle) -> Vec<PathBuf> {
     let (tx, rx) = std::sync::mpsc::channel();
     app.dialog()
         .file()
-        .add_filter("DOCX", &["docx"])
+        // Ein gemeinsamer Filter, keine vier einzelnen: die App behandelt alle
+        // vier Formate gleich, und ein Dialog mit vier Kategorien würde die
+        // jeweils anderen Dateien ausblenden — man müsste vorher wissen, wie
+        // die gesuchte Datei heißt.
+        .add_filter("Word-Dokumente und -Vorlagen", &["docx", "dotx", "docm", "dotm"])
         .pick_files(move |picked| {
             let _ = tx.send(picked);
         });
@@ -424,9 +441,11 @@ async fn open_form_window(
     *bridge.shown.lock().map_err(|_| oops())? = Some(label.clone());
     tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App("form.html".into()))
         .title("Formular")
-        // 668 = die 640px breite Feldspalte aus form.html plus die 14px Polster
-        // links und rechts: breiter wird das Fenster nur zu leerem Rand.
-        .inner_size(668.0, 640.0)
+        // Schmaler als die 640px-Feldspalte aus form.html: die Felder füllen
+        // dann die Breite, statt dass links und rechts leerer Rand steht. Das
+        // Polster von `#form` fällt dabei von selbst auf seine 14px zurück,
+        // dafür steht dort `max(14px, …)`.
+        .inner_size(482.0, 640.0)
         .min_inner_size(420.0, 420.0)
         .build()
         .map(|_| ())
@@ -570,8 +589,10 @@ async fn open_keys_window(
     *bridge.shown.lock().map_err(|_| oops())? = Some(label.clone());
     tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App("keys.html".into()))
         .title("Felder & Schlüssel")
-        // wie beim Formularfenster: die 640px breite Spalte plus 14px Polster
-        .inner_size(668.0, 640.0)
+        // dieselbe Größe wie das Formularfenster: beide zeigen eine Liste von
+        // Feldern untereinander, und nebeneinander stehen sie oft genug, dass
+        // unterschiedliche Größen nur auffielen.
+        .inner_size(482.0, 640.0)
         .min_inner_size(420.0, 420.0)
         .build()
         .map(|_| ())
@@ -645,6 +666,11 @@ async fn close_form_window(
 /// Gespeicherte Gruppen liegen unter %APPDATA%\<identifier>\groups\<id>\ —
 /// meta.json mit Name, Feldern und Werten, daneben 0.docx, 1.docx, …
 /// Die Oberfläche nennt nie einen Pfad, nur die Kennung der Gruppe.
+///
+/// `0.docx` ist ein fester Ablagename, keine Aussage über das Format: dort kann
+/// ebenso eine .dotx liegen. Welchen Namen und welche Endung ein Dokument
+/// wirklich trägt, steht in meta.json. Der Name auf der Platte wird nirgends
+/// angezeigt und von nichts geöffnet — nur gelesen und geschrieben.
 #[tauri::command]
 async fn group_save_meta(app: tauri::AppHandle, id: String, payload: String) -> Result<(), String> {
     let dir = group_dir(&app, &id)?;
@@ -804,6 +830,12 @@ $w = New-Object -ComObject Word.Application
 $w.Visible = $false
 $w.DisplayAlerts = 0
 $old = $null
+$oldSec = $w.AutomationSecurity
+# Word laesst Makros unter COM-Steuerung standardmaessig ohne Rueckfrage laufen.
+# Bei einem .docm hiesse das: ein Klick auf "Drucken" fuehrt AutoOpen aus dem
+# mitgebrachten VBA-Projekt aus, in einem unsichtbaren Word. Drucken braucht
+# keine Makros. 3 = msoAutomationSecurityForceDisable.
+$w.AutomationSecurity = 3
 try {
   if ($env:DOCFILL_PRINTER) { $old = $w.ActivePrinter; $w.ActivePrinter = $env:DOCFILL_PRINTER }
   $w.Options.PrintBackground = $false
@@ -812,6 +844,7 @@ try {
   $doc.Close(0)
 } finally {
   if ($old) { try { $w.ActivePrinter = $old } catch {} }
+  try { $w.AutomationSecurity = $oldSec } catch {}
   $w.Quit()
 }
 "#;
@@ -1394,6 +1427,15 @@ mod tests {
         assert!(stop.load(Ordering::SeqCst), "Abbruch nicht angezeigt");
 
         sign_stop(&state); // idempotent wie wipe_staging
+    }
+
+    #[test]
+    fn filter_label_names_the_four_word_formats() {
+        assert_eq!(filter_label("docx"), "Word-Dokument");
+        assert_eq!(filter_label("dotx"), "Word-Vorlage");
+        assert_eq!(filter_label("docm"), "Word-Dokument mit Makros");
+        assert_eq!(filter_label("dotm"), "Word-Vorlage mit Makros");
+        assert_eq!(filter_label("zip"), "ZIP", "Notnagel bleibt brauchbar");
     }
 
     #[test]

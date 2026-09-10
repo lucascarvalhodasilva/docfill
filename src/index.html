@@ -203,6 +203,7 @@
   #dlgHistory { flex:1; overflow-y:auto; padding:12px }
   #dlgKeys { flex:1; overflow-y:auto; padding:12px }
   dialog .bar .meta { color:var(--muted) }
+  #dlgFormLeer { margin-right:auto }
 
   /* Ergebnisliste, Aufklappmenü und der Link in der Kopfzeile stehen in app.css:
      das Historie-Fenster zeigt dieselben Zeilen. */
@@ -233,8 +234,8 @@
   <h2><span class="title">Dokumente</span>
     <button id="toggleSidebar" type="button" aria-controls="sidebar" aria-expanded="true"></button></h2>
   <span id="railCount" aria-hidden="true"></span>
-  <label class="drop" id="drop">.docx-Dateien hierher ziehen<kbd>oder klicken zum Auswählen</kbd>
-    <input type="file" id="pick" accept=".docx" multiple></label>
+  <label class="drop" id="drop">Word-Dateien hierher ziehen<kbd>.docx · .dotx · .docm · .dotm — oder klicken zum Auswählen</kbd>
+    <input type="file" id="pick" accept=".docx,.dotx,.docm,.dotm" multiple></label>
   <ul id="files"></ul>
   <span class="meta" id="docCount"></span>
   <div class="row"><button id="all" disabled title="Alle Dokumente auswählen">Alle</button>
@@ -336,7 +337,7 @@
 <dialog id="formDlg">
   <div class="bar"><b>Formular</b><span id="dlgFormMeta" class="meta"></span><button id="formDlgClose">Schließen</button></div>
   <div id="dlgForm"></div>
-  <div class="bar"><button id="dlgFill" class="primary">Ausgewählte Dokumente ausfüllen</button></div>
+  <div class="bar"><span id="dlgFormLeer" class="meta"></span><button id="dlgFill" class="primary">Ausgewählte Dokumente ausfüllen</button></div>
 </dialog>
 <iframe id="printFrame" sandbox="allow-same-origin allow-modals"></iframe>
 
@@ -344,7 +345,7 @@
 // Private module import. Nothing is attached to window, so injected script has
 // no handle on the IPC bridge or the filesystem API.
 import { invoke, listen } from "./vendor/tauri-api.js";
-import { renderFields, collectValues, esc } from "./form-ui.js";
+import { renderFields, collectValues, emptyText, esc } from "./form-ui.js";
 import { defineMenu, openMenu, closeMenu, menuOpenFor } from "./menu-ui.js";
 import { renderControls, collectOverrides, overrideMeta, writeTagsLabel } from "./keys-ui.js";
 import { renderHistory, size } from "./history-ui.js";
@@ -360,9 +361,34 @@ const CT = "http://schemas.openxmlformats.org/package/2006/content-types";
 const $ = id => document.getElementById(id);
 const native = typeof window.__TAURI_INTERNALS__ !== "undefined";  // inside the Tauri shell?
 
-const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+// Die vier Word-Formate. Ein Paket ist innen immer dasselbe — dieselben Teile,
+// dieselben w:sdt; unterschieden werden sie allein durch den Typ des Haupt-Teils
+// in [Content_Types].xml. `ziel` sagt, was beim Ausfüllen daraus wird: aus einer
+// Vorlage ein Dokument, denn ein ausgefülltes Formular ist keine Vorlage mehr.
+// Makrofähig bleibt makrofähig, sonst fiele das VBA-Projekt aus dem Paket.
+const FORMATE = {
+  docx: { paket: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          haupt: "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
+          ziel: "docx" },
+  dotx: { paket: "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
+          haupt: "application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml",
+          ziel: "docx" },
+  docm: { paket: "application/vnd.ms-word.document.macroEnabled.12",
+          haupt: "application/vnd.ms-word.document.macroEnabled.main+xml",
+          ziel: "docm" },
+  dotm: { paket: "application/vnd.ms-word.template.macroEnabled.12",
+          haupt: "application/vnd.ms-word.template.macroEnabled.main+xml",
+          ziel: "docm" },
+};
+const ENDUNG_RE = new RegExp(`\\.(${Object.keys(FORMATE).join("|")})$`, "i");
+// Die Endung eines Namens, klein geschrieben — oder "", wenn es keine der vier ist.
+const endungVon = name => (ENDUNG_RE.exec(name || "")?.[1] || "").toLowerCase();
+const ohneEndung = name => name.replace(ENDUNG_RE, "");
+// Für einen Blob, der nur unter seinem Namen bekannt ist. Wo das Paket selbst
+// vorliegt, entscheidet `formatVon` — der Name kann lügen, das Paket nicht.
+const paketMime = endung => (FORMATE[endung] || FORMATE.docx).paket;
 
-const MAX_FILE = 25 * 1024 * 1024;   // a .docx larger than this is not a form
+const MAX_FILE = 25 * 1024 * 1024;   // eine Word-Datei über dieser Größe ist kein Formular
 const MAX_PART = 40 * 1024 * 1024;   // guards against a zip bomb in document.xml
 
 // `overrides` sind die im Zahnrad-Fenster vergebenen Schlüssel und die dort
@@ -430,25 +456,39 @@ async function pickFiles() {
   let picked;
   try { picked = await invoke("pick_documents"); }
   catch (e) { setStatus(String(e), true); return; }
-  const skipped = [];
+  const zuGross = [], falsch = [];
   for (const f of picked) {
-    if (f.oversize) { skipped.push(f.name); continue; }
+    if (f.oversize) { zuGross.push(f.name); continue; }
+    // Normalerweise hält schon der Filter des Dialogs. Auf manchen Systemen ist
+    // er aber nur ein Vorschlag, und dieselbe Prüfung wie beim Hereinziehen
+    // kostet hier nichts.
+    if (!endungVon(f.name)) { falsch.push(f.name); continue; }
     docs.push({ id: f.id, name: f.name, buffer: new Uint8Array(f.bytes).buffer,
                 selected: true, overrides: {}, onDisk: true });
   }
   renderFiles();
-  if (skipped.length) setStatus(`Zu groß (max. ${MAX_FILE / 1048576} MB): ${skipped.join(", ")}`, true);
+  const sagen = [];
+  if (falsch.length) sagen.push(`Keine Word-Datei: ${falsch.join(", ")}`);
+  if (zuGross.length) sagen.push(`Zu groß (max. ${MAX_FILE / 1048576} MB): ${zuGross.join(", ")}`);
+  if (sagen.length) setStatus(sagen.join(" · "), true);
 }
 
 async function addFiles(list) {
-  const skipped = [];
+  const zuGross = [], falsch = [];
   for (const f of list) {
-    if (!f.name.toLowerCase().endsWith(".docx")) continue;
-    if (f.size > MAX_FILE) { skipped.push(f.name); continue; }
+    if (!endungVon(f.name)) { falsch.push(f.name); continue; }
+    if (f.size > MAX_FILE) { zuGross.push(f.name); continue; }
     docs.push({ id: crypto.randomUUID(), name: f.name, buffer: await f.arrayBuffer(), selected: true, overrides: {}, onDisk: false });
   }
   renderFiles();
-  if (skipped.length) setStatus(`Zu groß (max. ${MAX_FILE / 1048576} MB): ${skipped.join(", ")}`, true);
+  // Bisher verschwand eine falsche Datei wortlos. Wer eine PDF hereinzieht und
+  // nichts passieren sieht, sucht den Fehler bei sich.
+  const sagen = [];
+  if (falsch.some(n => /\.(doc|dot)$/i.test(n)))
+    sagen.push("Das alte Word-Format (.doc/.dot) lässt sich nicht lesen — in Word als .docx speichern.");
+  if (falsch.length) sagen.push(`Keine Word-Datei: ${falsch.join(", ")}`);
+  if (zuGross.length) sagen.push(`Zu groß (max. ${MAX_FILE / 1048576} MB): ${zuGross.join(", ")}`);
+  if (sagen.length) setStatus(sagen.join(" · "), true);
 }
 
 // JSZip knows the declared size before it decompresses; refuse the absurd ones.
@@ -456,7 +496,12 @@ async function partText(zip, path) {
   const entry = zip.file(path);
   const declared = entry && entry._data && entry._data.uncompressedSize;
   if (declared > MAX_PART) throw new Error("Das Dokument ist unplausibel groß.");
-  return entry.async("string");
+  // Die Byte-Reihenfolge-Marke muss weg, bevor geparst wird. Word schreibt sie
+  // in manche Teile — [Content_Types].xml trägt sie regelmäßig —, und als
+  // Zeichen am Anfang steht sie vor der XML-Deklaration: der Parser bricht ab
+  // und liefert statt des Dokuments eine Fehlerseite, mit der weitergerechnet
+  // würde, ohne dass jemand etwas merkt.
+  return (await entry.async("string")).replace(/^\uFEFF/, "");
 }
 function renderFiles() {
   const ul = $("files"); ul.innerHTML = "";
@@ -691,25 +736,69 @@ async function readControls(buffer, docName, overrides) {
       const { orig, key, hidden } = keyOf(pr, sdt, pos, docName, overrides); pos++;
       const val = n => { const e = pr.getElementsByTagNameNS(W, n)[0]; return e ? e.getAttributeNS(W, "val") : ""; };
       const has = n => pr.getElementsByTagNameNS(W, n).length > 0;
-      let type = "text", options = [];
+      let type = "text", options = [], optionLeer = "", format = "", checked = "", unchecked = "";
       // Ein Bild-Inhaltssteuerelement ist die Stelle, an die später die
       // Unterschrift kommt. Es wird nicht getippt, gehört also nicht ins
       // Formular — die Prüfung steht zuerst, weil ein Bildfeld sonst als
       // leeres Textfeld durchginge.
       if (has("picture")) type = "picture";
-      else if (has("date")) type = "date";
+      else if (has("date")) {
+        type = "date";
+        // Die Vorlage sagt selbst, wie das Datum aussehen soll. Ohne diese
+        // Zeile schrieb Docfill sein eigenes Format hinein, und im Dokument
+        // stand etwas anderes, als das Feld ankündigt.
+        const f = pr.getElementsByTagNameNS(W, "dateFormat")[0];
+        format = (f && f.getAttributeNS(W, "val")) || "";
+      }
       else if (has("dropDownList") || has("comboBox")) {
         type = has("dropDownList") ? "dropdown" : "combo";
-        options = Array.from(pr.getElementsByTagNameNS(W, "listItem")).map(li => li.getAttributeNS(W, "displayText") || li.getAttributeNS(W, "value"));
-      } else if (pr.getElementsByTagNameNS(W14, "checkbox").length) type = "checkbox";
+        const items = Array.from(pr.getElementsByTagNameNS(W, "listItem"));
+        options = items.map(li => li.getAttributeNS(W, "displayText") || li.getAttributeNS(W, "value") || "");
+        // Ein Eintrag mit **ausdrücklich leerem** w:value ist in Word die Zeile
+        // „nichts gewählt" — keine Antwort, sondern die Aufforderung, eine zu
+        // geben. Ein ganz fehlendes w:value ist etwas anderes: das trägt ein von
+        // Hand geschriebener Eintrag, der sehr wohl geschrieben werden will.
+        //
+        // Er bleibt in `options` stehen, weil der Listen-Editor im Zahnrad-
+        // Fenster daraus die Einträge zurückschreibt; fiele er hier heraus,
+        // verschwände er aus der Vorlage. Das Formular erkennt ihn an
+        // `optionLeer` und zeigt ihn als Platzhalter statt als Antwort.
+        const ohne = items.find(li => li.hasAttributeNS(W, "value") && li.getAttributeNS(W, "value") === "");
+        optionLeer = ohne ? (ohne.getAttributeNS(W, "displayText") || "") : "";
+      } else if (pr.getElementsByTagNameNS(W14, "checkbox").length) {
+        type = "checkbox";
+        // Welches Zeichen „angekreuzt" heißt, steht im Dokument — als Hexzahl.
+        // Eine Vorlage mit Wingdings-Haken bekam bisher ein ☒, das ihre Schrift
+        // gar nicht kennt: im Word stand dann ein leeres Kästchen.
+        const zeichen = n => {
+          const e = pr.getElementsByTagNameNS(W14, n)[0];
+          const v = e && e.getAttributeNS(W14, "val");
+          const nr = v && parseInt(v, 16);
+          return nr ? String.fromCodePoint(nr) : "";
+        };
+        checked = zeichen("checkedState") || "☒";
+        unchecked = zeichen("uncheckedState") || "☐";
+      }
       else if (has("richText")) type = "rich";
+      // Ein mehrzeiliges Textfeld ist in Word ein eigener Feldtyp und gehört
+      // deshalb auch im Formular in ein mehrzeiliges Eingabefeld. `replaceSdt`
+      // macht aus den Zeilenumbrüchen w:br, das Dokument bekommt sie also.
+      else {
+        const t = pr.getElementsByTagNameNS(W, "text")[0];
+        if (t && t.getAttributeNS(W, "multiLine") === "1") type = "multi";
+      }
       const tag = val("tag"), title = val("alias");
       const current = sdtText(sdt);
       const isPlaceholder = has("showingPlcHdr");
       // Der Text eines noch nicht ausgefüllten Steuerelements ist Words Platzhalter,
       // kein Wert. Er benennt das Feld und steht grau im Eingabefeld — geschrieben
       // wird er nie, sonst verlöre die Vorlage bei jedem Ausfüllen ihre Felder.
-      found.push({ orig, key, hidden, tag, title, type, options, current: isPlaceholder ? "" : current, hint: isPlaceholder ? current : "" });
+      // `options`, `format`, `checked` und `unchecked` stehen hier so, wie das
+      // Dokument sie hergibt — ohne die Einstellungen aus dem Zahnrad-Fenster.
+      // Das Fenster braucht beides nebeneinander: den Stand der Vorlage als
+      // Vorbelegung und die Abweichung als das, was es zu speichern gilt.
+      found.push({ orig, key, hidden, tag, title, type, options, optionLeer, format, checked, unchecked,
+                   current: isPlaceholder ? "" : current, hint: isPlaceholder ? current : "" });
     }
   }
   return found;
@@ -735,7 +824,7 @@ function groupMeta(g) {
 }
 // Mehrere Kacheln, die alle „Formular“ heißen, wären nicht zu unterscheiden.
 function defaultName(list) {
-  const first = list[0] && list[0].name.replace(/\.docx$/i, "").trim();
+  const first = list[0] && ohneEndung(list[0].name).trim();
   return first || "Formular";
 }
 
@@ -760,8 +849,21 @@ async function scanFields(list) {
         if (c.hint && !prev.hint) prev.hint = c.hint;
         return;
       }
-      byKey.set(key, { key, tag: c.tag, title: c.title || c.tag || labelFrom(c.hint) || `Feld ${++n}`,
-                       type: c.type, options: c.options || [], current: c.current, hint: c.hint,
+      // Die Einstellungen aus dem Zahnrad-Fenster legen sich über das, was in
+      // der Vorlage steht: geänderte Listeneinträge, ein anderes Datumsformat,
+      // andere Ankreuz-Zeichen. `readControls` liefert absichtlich nur den
+      // Stand der Vorlage, damit das Fenster beides auseinanderhalten kann.
+      const o = (d.overrides && d.overrides[c.orig]) || {};
+      // Das Feld heißt im Formular so, wie es im Zahnrad-Fenster im Schlüssel
+      // steht — `autoKey` macht aus „tag:Branche" wieder „Branche". Wer dort
+      // einen Schlüssel vergibt, sieht ihn hier wieder; zwei Namen für dieselbe
+      // Sache gibt es nicht mehr. Ohne festen Schlüssel (`pos:…`) bleibt nur
+      // der Platzhaltertext und zuletzt eine Nummer.
+      byKey.set(key, { key, tag: c.tag, title: autoKey(key) || labelFrom(c.hint) || `Feld ${++n}`,
+                       type: c.type, options: o.options || c.options || [], optionLeer: c.optionLeer || "",
+                       format: o.format || c.format || "", checked: o.checked || c.checked || "",
+                       unchecked: o.unchecked || c.unchecked || "",
+                       current: c.current, hint: o.hint || c.hint,
                        count: 1, docs: 1, ofDocs: list.length });
     });
   }
@@ -1031,8 +1133,18 @@ async function openForm(id) {
   // Ohne Tauri gibt es kein zweites Fenster — derselbe Inhalt als Dialog.
   $("dlgFormMeta").textContent = groupMeta(g);
   renderFields($("dlgForm"), g.fields, g.values);
+  zaehleDlgLeer();
   $("formDlg").showModal();
 }
+// Dieselbe Zählung wie im Formularfenster. Als Eigenschaft gesetzt, nicht mit
+// addEventListener: `openForm` läuft bei jedem Klick auf eine Kachel erneut,
+// Listener würden sich stapeln.
+const zaehleDlgLeer = () => {
+  const g = groupById(activeId);
+  $("dlgFormLeer").textContent = g ? emptyText($("dlgForm"), g.fields) : "";
+};
+$("dlgForm").oninput = $("dlgForm").onchange = zaehleDlgLeer;
+
 $("formDlgClose").onclick = () => {
   const g = groupById(activeId);
   if (g) { g.values = collectValues($("dlgForm"), g.fields); persistMeta(g); }
@@ -1078,17 +1190,32 @@ async function openKeys(d) {
   const known = [...new Set(all.flatMap(a => a.ctrls.map(c => c.key))
     .filter(k => k.startsWith("tag:")).map(k => k.slice(4)))].sort((a, b) => a.localeCompare(b, "de"));
   let n = 0;
-  const controls = mine.ctrls.map(c => ({
+  const controls = mine.ctrls.map(c => {
+    const o = d.overrides[c.orig] || {};
+    return {
     orig: c.orig,
     auto: autoKey(c.orig),
-    key: (d.overrides[c.orig] && d.overrides[c.orig].key) || "",
+    key: o.key || "",
     hidden: c.hidden,
     title: c.title || c.tag || labelFrom(c.hint) || `Feld ${++n}`,
     type: c.type,
+    // Zweimal dasselbe, mit Absicht: `…Doc` ist der Stand der Vorlage, das
+    // andere die Vorbelegung im Fenster. Nur so lässt sich hinterher sagen, ob
+    // eine Einstellung von der Vorlage abweicht — und ob eine frühere
+    // Abweichung gerade zurückgestellt wurde.
+    // Der Platzhaltertext, den das Dokument zeigt — plus `current`, damit das
+    // Fenster bei einem Feld ohne Platzhalter zeigen kann, welcher Inhalt beim
+    // Schreiben ersetzt würde.
+    hint: o.hint || c.hint || "", hintDoc: c.hint || "", current: c.current || "",
+    options: o.options || c.options || [], optionsDoc: c.options || [],
+    format: o.format || c.format || "", formatDoc: c.format || "",
+    checked: o.checked || c.checked || "", checkedDoc: c.checked || "",
+    unchecked: o.unchecked || c.unchecked || "", uncheckedDoc: c.unchecked || "",
     // wie viele der anderen Dokumente dasselbe Feld haben — das ist es, was
     // ein geänderter Schlüssel bewirken soll
-    shared: others.filter(a => a.ctrls.some(o => o.key === c.key)).length
-  }));
+    shared: others.filter(a => a.ctrls.some(x => x.key === c.key)).length
+    };
+  });
 
   if (native) {
     const payload = JSON.stringify({ docId: d.id, name: d.name, onDisk: !!d.onDisk, controls, known });
@@ -1119,20 +1246,24 @@ async function applyOverrides(p) {
   const d = docs.find(x => x.id === p.docId);
   if (!d) { setStatus("Die Datei steht nicht mehr in der Liste.", true); return; }
   d.overrides = p.overrides || {};
-  // Andere Schlüssel, andere Überschneidung — und nach `writeTags` steht das Tag
+  // Andere Schlüssel, andere Überschneidung — und nach `writeSettings` steht das Tag
   // im Dokument selbst, der Schlüssel wandert also auch dort.
   d.ctrls = null; d.unreadable = false;
-  const written = p.writeTags ? Object.values(d.overrides).filter(o => o.key).length : 0;
+  // Geschrieben wird alles, was sich ins Dokument ausdrücken lässt — nur das
+  // Abwählen eines Feldes bleibt eine Sache der App.
+  const written = p.writeTags
+    ? Object.values(d.overrides).filter(o => o.key || o.hint || o.options || o.format || o.checked || o.unchecked).length
+    : 0;
   if (written) {
-    try { await writeTags(d); }
+    try { await writeSettings(d); }
     catch (e) {
       renderFiles();
-      setStatus("Die Schlüssel konnten nicht ins Dokument geschrieben werden: " + e.message, true);
+      setStatus("Die Einstellungen konnten nicht ins Dokument geschrieben werden: " + e.message, true);
       return;
     }
   }
   renderFiles();
-  const said = [written ? `${written} Schlüssel ins Dokument geschrieben` : "", overrideMeta(d.overrides)]
+  const said = [written ? `${written} Feld${written === 1 ? "" : "er"} ins Dokument geschrieben` : "", overrideMeta(d.overrides)]
     .filter(Boolean).join(" · ") || "keine Abweichungen";
   if (!written) { setStatus(`${d.name}: ${said}.`); return; }
   // Kam die Datei über den Öffnen-Dialog herein, kennt Rust ihren Pfad: die neue
@@ -1148,10 +1279,27 @@ async function applyOverrides(p) {
   // Ohne bekannten Pfad bleibt die Kopie: wohin sie geht, entscheidet der
   // native Dialog in Rust.
   setStatus(`${d.name}: ${said}.`);
-  await save({ name: d.name, blob: new Blob([d.buffer], { type: DOCX_MIME }) });
+  // Hier bleibt eine Vorlage eine Vorlage: geschrieben wurden nur die w:tag-Werte,
+  // der Pakettyp ist unangetastet. Also auch der MIME-Typ der Ausgangsdatei.
+  await save({ name: d.name, blob: new Blob([d.buffer], { type: paketMime(endungVon(d.name)) }) });
 }
 
 /* ---------- filling ---------- */
+
+// Wie viele Felder dieses einen Dokuments ohne Wert geblieben sind. Gearbeitet
+// wird mit den Steuerelementen der Datei, nicht mit den Feldern des Formulars:
+// nur sie wissen, was in dieser Kopie überhaupt vorkommt.
+function leereFelder(ctrls, values) {
+  const offen = new Set();
+  for (const c of ctrls) {
+    // Abgewählte und Unterschriftsfelder stehen nie im Formular; zwei Stellen
+    // mit demselben Schlüssel sind eine Lücke, nicht zwei — daher das Set.
+    if (c.hidden || c.type === "picture") continue;
+    if (!values.has(c.key)) offen.add(c.key);
+  }
+  return offen.size;
+}
+
 // Die Werte kommen aus dem Formularfenster, die Dokumente bleiben hier.
 async function runFill(id, entered) {
   const g = groupById(id);
@@ -1164,13 +1312,19 @@ async function runFill(id, entered) {
     await ensureLoaded(g);
     for (const d of g.docs) {
       setStatus(`Dokument ${++done} von ${g.docs.length} wird ausgefüllt…`);
-      const blob = await fillDoc(d, values);
+      const { blob, endung } = await fillDoc(d, values);
       // Die Steuerelemente liegen schon gelesen bereit; daraus ergibt sich, ob
       // „Unterschreiben lassen" für dieses Ergebnis überhaupt etwas zu tun hat.
       const ctrls = await controlsOf(d);
       results.push({
-        name: d.name.replace(/\.docx$/i, "") + "_ausgefuellt.docx", blob,
+        // Die Endung kommt aus dem Paket, nicht aus dem Namen der Vorlage: aus
+        // einer .dotx wird eine .docx, aus einer .dotm eine .docm.
+        name: ohneEndung(d.name) + "_ausgefuellt." + endung, blob,
         signTargets: ctrls.filter(c => c.type === "picture").length,
+        // Je Dokument gezählt, nicht je Formular: ein Feld kann in der einen
+        // Kopie stehen und in der anderen fehlen. Und gezählt wird jetzt —
+        // später sagt weder `values` noch `fields` noch etwas über diesen Lauf.
+        leer: leereFelder(ctrls, values),
       });
     }
     if (results.length) addHistoryRun(g.name, results);
@@ -1291,7 +1445,12 @@ async function fillDoc(d, values) {
     }
     zip.file(path, new XMLSerializer().serializeToString(xml));
   }
-  return zip.generateAsync({ type: "blob", mimeType: DOCX_MIME });
+  // Erst danach: `alsDokument` fasst nur die Typenliste an, nie ein w:sdt — die
+  // Zählung von readControls und fillDoc bleibt davon unberührt. Zurück kommt
+  // auch die Endung, weil nur hier das Paket offen lag und feststand, was
+  // wirklich darin stand.
+  const endung = await alsDokument(zip, d.name);
+  return { blob: await zip.generateAsync({ type: "blob", mimeType: paketMime(endung) }), endung };
 }
 
 /* ---------- Unterschrift ins Dokument setzen ----------
@@ -1336,11 +1495,52 @@ function addRel(rels, rid, ziel) {
   rels.documentElement.appendChild(rel);
 }
 
+/* ---------- die Typenliste des Pakets ----------
+   [Content_Types].xml sagt Word, was für eine Datei es vor sich hat. Zwei
+   Stellen schreiben daran: `alsDokument` beim Ausfüllen und `ensurePng` beim
+   Unterschreiben. Gelesen und zurückgeschrieben wird für beide hier, damit die
+   eckigen Klammern im Pfad — die zum Namen gehören — nur einmal dastehen. */
+const CT_PFAD = "[Content_Types].xml";
+const typenliste = async zip =>
+  new DOMParser().parseFromString(await partText(zip, CT_PFAD), "application/xml");
+const typenlisteZurueck = (zip, xml) =>
+  zip.file(CT_PFAD, new XMLSerializer().serializeToString(xml));
+
+// Der Eintrag des Haupt-Teils. Gefunden über den Pfad — denselben, den auch
+// PARTS an erster Stelle nennt —, damit beide nicht auseinanderlaufen können.
+// word/glossary/document.xml (die Bausteine einer Vorlage) steht unter einem
+// anderen Pfad und fällt so von selbst heraus.
+const hauptEintrag = xml => Array.from(xml.documentElement.children).find(e =>
+  e.localName === "Override" &&
+  (e.getAttribute("PartName") || "").replace(/^\/?/, "/").toLowerCase() === "/word/document.xml");
+
+// Welches der vier Formate wirklich im Paket steht. Entschieden wird am
+// Inhaltstyp, nicht am Dateinamen: eine in .docx umbenannte Vorlage ist innen
+// unverändert eine Vorlage, und Word richtet sich nach dem Paket. Der Name ist
+// nur der Notnagel, wenn dort nichts Bekanntes steht.
+function formatVon(xml, name) {
+  const ct = (hauptEintrag(xml)?.getAttribute("ContentType") || "").trim();
+  return Object.keys(FORMATE).find(e => FORMATE[e].haupt === ct) || endungVon(name) || "docx";
+}
+
+// Aus einer Vorlage wird beim Ausfüllen ein Dokument. Bliebe der Pakettyp
+// „Vorlage", legte Word beim Doppelklick auf das Ergebnis wieder eine neue
+// unbenannte Kopie an, statt die ausgefüllte Datei zu zeigen. Zurück kommt die
+// Endung, die das Ergebnis tragen muss.
+async function alsDokument(zip, name) {
+  const xml = await typenliste(zip);
+  const von = formatVon(xml, name), ziel = FORMATE[von].ziel;
+  if (ziel !== von) {
+    hauptEintrag(xml).setAttribute("ContentType", FORMATE[ziel].haupt);
+    typenlisteZurueck(zip, xml);
+  }
+  return ziel;
+}
+
 // Ohne diesen Eintrag kennt das Paket den Dateityp nicht und Word bietet an,
 // das Dokument zu reparieren. Er fehlt, sobald die Vorlage bisher kein PNG hatte.
 async function ensurePng(zip) {
-  const path = "[Content_Types].xml";   // die eckigen Klammern gehören zum Namen
-  const xml = new DOMParser().parseFromString(await partText(zip, path), "application/xml");
+  const xml = await typenliste(zip);
   const da = Array.from(xml.documentElement.children).some(e =>
     e.localName === "Default" && (e.getAttribute("Extension") || "").toLowerCase() === "png");
   if (da) return;
@@ -1349,7 +1549,7 @@ async function ensurePng(zip) {
   d.setAttribute("ContentType", "image/png");
   // Im Schema stehen alle <Default> vor allen <Override>.
   xml.documentElement.insertBefore(d, xml.documentElement.firstChild);
-  zip.file(path, new XMLSerializer().serializeToString(xml));
+  typenlisteZurueck(zip, xml);
 }
 
 // Breite und Höhe aus dem IHDR-Kopf. Gebraucht wird davon nur das
@@ -1443,17 +1643,21 @@ async function insertSignature(quelle, png, beleg) {
   // Einträge; für einen Streitfall steht der Nachweis damit im selben Dokument
   // wie die Unterschrift, und nicht in einer Datei daneben, die verlorengeht.
   if (beleg) zip.file("docfill/unterschrift.json", beleg);
-  return { blob: await zip.generateAsync({ type: "blob", mimeType: DOCX_MIME }), stellen };
+  // Unterschrieben wird ein Ergebnis, also ein Dokument — welches Format,
+  // steht im Paket. Ein Name liegt hier gar nicht vor, nur der Blob.
+  const format = formatVon(await typenliste(zip), "");
+  return { blob: await zip.generateAsync({ type: "blob", mimeType: paketMime(format) }), stellen };
 }
 
-// Die im Zahnrad-Fenster vergebenen Schlüssel als w:tag ins Dokument schreiben.
-// Danach bringt die Vorlage sie selbst mit: `sdtKey` liefert für ein echtes Tag
-// denselben Schlüssel, den die Überschreibung erzeugt hat — die Überschreibung
-// wird also überflüssig und fällt weg.
+// Die im Zahnrad-Fenster vorgenommenen Einstellungen dauerhaft ins Dokument
+// schreiben: den Schlüssel als w:tag, die Listeneinträge als w:listItem, das
+// Datumsformat als w:dateFormat und die beiden Ankreuz-Zeichen als w14-Zustände.
+// Danach bringt die Vorlage sie selbst mit, die Überschreibung wird überflüssig
+// und fällt weg.
 //
 // Gerechnet wird mit `sdtKey`, nicht mit `keyOf`: gesucht ist die Herkunft, an
 // der die Überschreibung hängt, nicht ihr Ergebnis.
-async function writeTags(d) {
+async function writeSettings(d) {
   const zip = await JSZip.loadAsync(d.buffer);
   let pos = 0;
   for (const path of partPaths(zip)) {
@@ -1461,19 +1665,135 @@ async function writeTags(d) {
     for (const sdt of Array.from(xml.getElementsByTagNameNS(W, "sdt"))) {
       const pr = sdt.getElementsByTagNameNS(W, "sdtPr")[0]; if (!pr) continue;
       const o = d.overrides[sdtKey(pr, sdt, pos, d.name)]; pos++;
-      if (o && o.key) setTag(xml, pr, o.key);
+      if (!o) continue;
+      if (o.key) setTag(xml, pr, o.key);
+      if (o.hint) setPlaceholder(xml, pr, sdt, o.hint);
+      if (o.options) setListItems(xml, pr, o.options);
+      if (o.format) setDateFormat(xml, pr, o.format);
+      if (o.checked || o.unchecked) setCheckStates(pr, o.checked, o.unchecked);
     }
     zip.file(path, new XMLSerializer().serializeToString(xml));
   }
+  // Ohne `alsDokument`, und das mit Absicht: hier wird die Vorlage selbst
+  // eingestellt, nicht ausgefüllt. Eine .dotx muss danach eine .dotx sein,
+  // sonst legt Word beim nächsten Doppelklick keine neue Kopie mehr an.
   d.buffer = await zip.generateAsync({ type: "arraybuffer" });
   // Nur das Abwählen bleibt eine Sache der App — das lässt sich in einem .docx
-  // nicht ausdrücken. Es hängt jetzt am neuen Schlüssel: das Steuerelement
-  // trägt sein Tag, `sdtKey` gibt beim nächsten Lesen also etwas anderes zurück.
+  // nicht ausdrücken, also bleibt es in der Karte stehen, während alles andere
+  // jetzt im Dokument selbst steht. Es hängt am neuen Schlüssel: das
+  // Steuerelement trägt sein Tag, `sdtKey` gibt beim nächsten Lesen also etwas
+  // anderes zurück.
   const left = {};
   for (const [orig, o] of Object.entries(d.overrides)) {
-    if (o.hidden) left[o.key ? "tag:" + o.key : orig] = { hidden: true };
+    const rest = {};
+    if (o.hidden) rest.hidden = true;
+    if (Object.keys(rest).length) left[neuerSchluessel(orig, o)] = rest;
   }
   d.overrides = left;
+}
+
+// Unter welchem Schlüssel ein Steuerelement nach dem Schreiben zu finden ist.
+// `sdtKey` staffelt tag → alias → Platzhaltertext → Position; was hier ins
+// Dokument geht, kann diese Staffel also verschieben. Ein geschriebenes w:tag
+// gewinnt immer. Ein geschriebener Platzhalter greift nur, solange weder Tag
+// noch Alias da sind — dann aber wird aus „pos:Datei#7" ein „hint:Branche:",
+// und ohne diese Zeile zeigte `hidden` danach ins Leere.
+function neuerSchluessel(orig, o) {
+  if (o.key) return "tag:" + o.key;
+  if (o.hint && orig.startsWith("pos:")) return "hint:" + o.hint.replace(/\s+/g, " ").trim();
+  return orig;
+}
+
+// Den grauen Platzhaltertext setzen — das Gegenstück zu dem, was `replaceSdt`
+// beim Ausfüllen abräumt. Der bisherige Inhalt wird dabei ersetzt; bei einem
+// Feld, das schon einen Platzhalter trug, ist das derselbe Vorgang, bei einem
+// gefüllten Feld kostet es dessen Text. Das Zahnrad-Fenster zeigt deshalb
+// vorher, was dort steht.
+function setPlaceholder(xml, pr, sdt, text) {
+  // w:showingPlcHdr ist ein leeres Kind von sdtPr und steht in der festen Folge
+  // vor dem Typ-Element (w:text, w:dropDownList, …) — wie bei setTag zählt die
+  // Reihenfolge, sonst weist Word das Dokument zurück.
+  if (!pr.getElementsByTagNameNS(W, "showingPlcHdr").length) {
+    const el = xml.createElementNS(W, "w:showingPlcHdr");
+    const TYPEN = ["text", "richText", "dropDownList", "comboBox", "date", "picture"];
+    const typ = TYPEN.map(n => pr.getElementsByTagNameNS(W, n)[0]).find(Boolean);
+    if (typ) pr.insertBefore(el, typ); else pr.appendChild(el);
+  }
+  const content = sdt.getElementsByTagNameNS(W, "sdtContent")[0];
+  if (!content) return;
+  const runs = Array.from(content.getElementsByTagNameNS(W, "r"));
+  let run = runs[0];
+  if (!run) {
+    run = xml.createElementNS(W, "w:r");
+    (content.getElementsByTagNameNS(W, "p")[0] || content).appendChild(run);
+  }
+  runs.slice(1).forEach(r => r.parentNode.removeChild(r));
+  Array.from(run.childNodes).filter(n => n.namespaceURI === W && n.localName !== "rPr")
+    .forEach(n => run.removeChild(n));
+  // Grau wie Words eigener Platzhalter; ohne den Stil stünde dort schwarzer Text,
+  // der wie ein Wert aussieht.
+  let rPr = run.getElementsByTagNameNS(W, "rPr")[0];
+  if (!rPr) { rPr = xml.createElementNS(W, "w:rPr"); run.insertBefore(rPr, run.firstChild); }
+  if (!rPr.getElementsByTagNameNS(W, "rStyle").length) {
+    const st = xml.createElementNS(W, "w:rStyle");
+    st.setAttributeNS(W, "w:val", "PlaceholderText");
+    rPr.insertBefore(st, rPr.firstChild);
+  }
+  const t = xml.createElementNS(W, "w:t");
+  t.setAttribute("xml:space", "preserve");
+  t.appendChild(xml.createTextNode(text));
+  run.appendChild(t);
+}
+
+// Die Einträge einer Auswahlliste ersetzen. Der w:value bleibt erhalten, wo es
+// ihn schon gab: Word bindet daran mitunter Daten, und der angezeigte Text ist
+// das Einzige, was hier bearbeitet wurde.
+function setListItems(xml, pr, eintraege) {
+  const liste = pr.getElementsByTagNameNS(W, "dropDownList")[0]
+             || pr.getElementsByTagNameNS(W, "comboBox")[0];
+  if (!liste) return;
+  const alt = Array.from(liste.getElementsByTagNameNS(W, "listItem"));
+  const werte = alt.map(li => li.getAttributeNS(W, "value"));
+  // Der w:value gehört zum Eintrag, nicht zu seiner Stelle. Über die Stelle
+  // allein zu gehen ginge schief, sobald jemand eine Zeile entfernt: den leeren
+  // Wert der Platzhalterzeile erbte dann die erste echte Antwort, und die wäre
+  // fortan „nichts gewählt" — unsichtbar, bis nichts mehr geschrieben wird.
+  const nachText = new Map(alt.map((li, i) => [li.getAttributeNS(W, "displayText") || werte[i] || "", werte[i]]));
+  alt.forEach(li => li.parentNode.removeChild(li));
+  eintraege.forEach((text, i) => {
+    const li = xml.createElementNS(W, "w:listItem");
+    li.setAttributeNS(W, "w:displayText", text);
+    const wert = nachText.has(text) ? nachText.get(text) : (werte[i] != null ? werte[i] : text);
+    li.setAttributeNS(W, "w:value", wert != null ? wert : text);
+    liste.appendChild(li);
+  });
+}
+
+// w:dateFormat setzen. Es ist das erste Kind von w:date, deshalb reicht
+// Ersetzen oder Voranstellen.
+function setDateFormat(xml, pr, format) {
+  const datum = pr.getElementsByTagNameNS(W, "date")[0];
+  if (!datum) return;
+  const da = datum.getElementsByTagNameNS(W, "dateFormat")[0];
+  if (da) { da.setAttributeNS(W, "w:val", format); return; }
+  const el = xml.createElementNS(W, "w:dateFormat");
+  el.setAttributeNS(W, "w:val", format);
+  datum.insertBefore(el, datum.firstChild);
+}
+
+// Die beiden Ankreuz-Zeichen. Word notiert sie als Hexzahl; die Schrift bleibt
+// stehen, wie sie ist — sie gehört zur Vorlage, nicht zum Zeichen.
+function setCheckStates(pr, an, aus) {
+  const box = pr.getElementsByTagNameNS(W14, "checkbox")[0];
+  if (!box) return;
+  const setz = (n, zeichen) => {
+    if (!zeichen) return;
+    const e = box.getElementsByTagNameNS(W14, n)[0];
+    if (e) e.setAttributeNS(W14, "w14:val",
+      zeichen.codePointAt(0).toString(16).toUpperCase().padStart(4, "0"));
+  };
+  setz("checkedState", an);
+  setz("uncheckedState", aus);
 }
 
 // w:tag setzen. Nicht einfach anhängen: die Kinder von sdtPr sind eine Folge in
@@ -1629,6 +1949,8 @@ function renderResults() {
     div.style.animationDelay = Math.min(i, 6) * 25 + "ms";
     div.innerHTML = `<span class="name" title="${esc(r.name)}">${esc(r.name)}</span>${
       r.signed ? `<span class="badge" title="Am ${new Date(r.signed).toLocaleString("de-DE")} unterschrieben">unterschrieben</span>` : ""
+      }${
+      r.leer ? `<span class="badge warn" title="Diese Felder sind leer geblieben — dort steht noch, was die Vorlage vorgibt.">${r.leer} Feld${r.leer === 1 ? "" : "er"} leer</span>` : ""
       }<span class="size">${size(r.blob.size)}</span>
       <button class="menu-btn" data-i="${i}" aria-haspopup="menu" aria-expanded="false" aria-controls="resultMenu"
         aria-label="Aktionen für ${esc(r.name)}">Aktionen<span class="caret" aria-hidden="true"></span></button>
