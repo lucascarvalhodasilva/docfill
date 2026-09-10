@@ -868,6 +868,15 @@ struct Printer {
     default: bool,
 }
 
+/// Die Fassung, wie sie in Cargo.toml steht. Die Oberfläche zeigt sie an, damit
+/// man einer laufenden Installation ansieht, welche es ist — und sie soll dabei
+/// nicht abgeschrieben werden: dieselbe Zahl prüft der Bauplan gegen das
+/// Versionsschild, und sie benennt die Installationsdatei.
+#[tauri::command]
+fn app_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
 #[tauri::command]
 async fn list_printers() -> Result<Vec<Printer>, String> {
     #[cfg(target_os = "windows")]
@@ -1333,6 +1342,7 @@ pub fn run() {
             group_read_doc,
             group_delete,
             list_printers,
+            app_version,
             sign_begin,
             sign_cancel,
             sign_qr

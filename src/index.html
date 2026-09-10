@@ -13,6 +13,8 @@
   /* Farben, Formularfelder, Schaltflächen und die Statuszeile stehen in
      app.css und werden mit den Nebenfenstern geteilt. Hier nur das Seitenlayout. */
   body { display:grid; grid-template-columns:274px minmax(0,1fr);
+         /* zweite Zeile: der Streifen für die Fassung ganz unten */
+         grid-template-rows:minmax(0,1fr) auto;
          transition:grid-template-columns var(--dur) var(--ease) }
   body[data-sidebar=collapsed] { grid-template-columns:58px minmax(0,1fr) }
 
@@ -20,9 +22,11 @@
   /* Eigene Kachel, kein Streifen am Fensterrand: gleiche Ränder, Ecken und
      Abstände wie die Panels in main, damit beide Seiten auf einer Linie sitzen. */
   aside { background:var(--sidebar); border:1px solid var(--line); border-radius:var(--r);
-          margin:14px 0 14px 14px; padding:14px; overflow:auto;
+          /* unten weniger als oben: darunter kommt der Streifen mit der Fassung,
+             der den Abstand zur Fensterkante mitbringt. */
+          margin:14px 0 4px 14px; padding:14px; overflow:auto;
           display:flex; flex-direction:column; gap:10px }
-  main { padding:14px; overflow:hidden; display:grid; gap:12px;
+  main { padding:14px 14px 4px; overflow:hidden; display:grid; gap:12px;
          grid-template-columns:minmax(0,1fr);
          /* Untergrenze für die Ergebnisse, sonst bleiben sie ein Streifen unter
             dem Formular. An der Fensterhöhe gemessen, damit bei den 460px
@@ -85,6 +89,12 @@
                                             font-variant-numeric:tabular-nums }
   body[data-sidebar=collapsed] #railCount:empty { display:none }
 
+  /* Die Fassung ganz unten rechts, im Rand zwischen Inhalt und Fensterkante.
+     Eine eigene Rasterzeile, keine feste Positionierung: so kann sie nichts
+     überdecken, und Seitenleiste wie Panels enden von selbst darüber. Da, aber
+     leise — ablesbar, wenn man wissen will, welche Installation läuft. */
+  #version { grid-column:1 / -1; justify-self:end; padding:0 14px 5px;
+             color:var(--muted); font-variant-numeric:tabular-nums; line-height:1 }
   section.panel { background:var(--surface); border:1px solid var(--line); border-radius:var(--r); padding:14px;
                   display:flex; flex-direction:column; gap:10px; min-height:0 }
   #form, #results { overflow:auto; flex:1; min-height:0 }
@@ -259,6 +269,10 @@
       <button id="saveAll" class="primary" disabled>Alle speichern</button></div>
   </section>
 </main>
+
+<!-- Ganz unten im Fenster, über beide Spalten und rechtsbündig: die Fassung
+     steht im Rand zwischen Inhalt und Fensterkante, nicht in einem Panel. -->
+<span id="version" title="Fassung von Docfill"></span>
 
 <dialog id="dlg">
   <div class="bar"><b id="dlgName"></b><button id="dlgPrint">Drucken</button><button id="dlgSave">Speichern</button><button id="dlgClose">Schließen</button></div>
@@ -1462,6 +1476,12 @@ if (native) {
     else if (p.action === "print") print(d);
   });
 }
+
+// Die Fassung steht unten in der Ecke. Sie kommt aus Tauri, nicht aus dem
+// HTML: abgeschrieben liefe sie beim nächsten Versionswechsel davon, und
+// angezeigt werden soll ja gerade, welche Fassung wirklich läuft. Ohne Tauri —
+// im Browser beim Entwickeln — gibt es keine, dann bleibt die Ecke leer.
+if (native) invoke("app_version").then(v => { $("version").textContent = "v" + v; }).catch(() => {});
 
 loadFavorites();
 
